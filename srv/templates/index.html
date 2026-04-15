@@ -1,0 +1,2420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Travels</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+:root {
+  --sidebar-w: 420px;
+  --navy: #1a1a2e;
+  --navy-light: #232342;
+  --navy-lighter: #2d2d52;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --orange: #f59e0b;
+  --orange-light: #fbbf24;
+  --green: #10b981;
+  --red: #ef4444;
+  --red-hover: #dc2626;
+  --text: #f1f5f9;
+  --text-muted: #94a3b8;
+  --text-dim: #64748b;
+  --card-bg: #16163a;
+  --border: #334155;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 4px 24px rgba(0,0,0,0.3);
+  --transition: 0.2s ease;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--navy);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Layout */
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+}
+
+.sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  height: 100vh;
+  background: var(--navy);
+  display: flex;
+  flex-direction: column;
+  z-index: 10;
+  border-right: 1px solid var(--border);
+  transition: transform 0.3s ease;
+}
+
+.map-container {
+  flex: 1;
+  position: relative;
+  height: 100vh;
+}
+
+#map {
+  width: 100%;
+  height: 100%;
+}
+
+/* Mobile toggle */
+.mobile-toggle {
+  display: none;
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  background: var(--navy);
+  color: var(--text);
+  border: 2px solid var(--accent);
+  border-radius: 50px;
+  padding: 12px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+/* Header */
+.sidebar-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.sidebar-header h1 {
+  font-size: 20px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-header h1 span { font-size: 22px; }
+
+.header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Breadcrumb / back nav */
+.nav-bar {
+  display: none;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.nav-bar.active { display: flex; align-items: center; gap: 8px; }
+
+.nav-bar .back-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  transition: background var(--transition);
+}
+
+.nav-bar .back-btn:hover { background: var(--navy-lighter); }
+
+.nav-bar .breadcrumb {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Tab bar */
+.tab-bar {
+  display: none;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.tab-bar.active { display: flex; gap: 0; }
+
+.tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  white-space: nowrap;
+}
+
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Scrollable content */
+.sidebar-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--navy-lighter) transparent;
+}
+
+.sidebar-content::-webkit-scrollbar { width: 6px; }
+.sidebar-content::-webkit-scrollbar-track { background: transparent; }
+.sidebar-content::-webkit-scrollbar-thumb { background: var(--navy-lighter); border-radius: 3px; }
+
+/* View panels */
+.view-panel { display: none; padding: 20px 24px; }
+.view-panel.active { display: block; }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-secondary { background: var(--navy-lighter); color: var(--text); }
+.btn-secondary:hover { background: var(--border); }
+
+.btn-danger { background: var(--red); color: white; }
+.btn-danger:hover { background: var(--red-hover); }
+
+.btn-ghost {
+  background: none;
+  color: var(--text-muted);
+  padding: 6px 10px;
+}
+.btn-ghost:hover { color: var(--text); background: var(--navy-lighter); }
+
+.btn-orange { background: var(--orange); color: #1a1a2e; }
+.btn-orange:hover { background: var(--orange-light); }
+
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-full { width: 100%; }
+.btn-icon { padding: 8px; font-size: 16px; }
+
+/* Cards */
+.trip-card {
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+  position: relative;
+}
+
+.trip-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(59, 130, 246, 0.15);
+}
+
+.trip-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.trip-card p {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.trip-card .trip-meta {
+  display: flex;
+  gap: 16px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.trip-card .trip-meta span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.trip-card .delete-trip-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 4px;
+  font-size: 14px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: all var(--transition);
+}
+
+.trip-card:hover .delete-trip-btn { opacity: 1; }
+.trip-card .delete-trip-btn:hover { color: var(--red); background: rgba(239,68,68,0.1); }
+
+/* Forms */
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 14px;
+  transition: border-color var(--transition);
+  font-family: inherit;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+textarea.form-input {
+  resize: vertical;
+  min-height: 80px;
+}
+
+/* Section headers in detail view */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  margin-top: 24px;
+}
+
+.section-header:first-child { margin-top: 0; }
+
+.section-header h3 {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+/* Stops list */
+.stop-item {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all var(--transition);
+  align-items: flex-start;
+}
+
+.stop-item:hover {
+  border-color: var(--orange);
+}
+
+.stop-number {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  background: var(--orange);
+  color: var(--navy);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.stop-info { flex: 1; min-width: 0; }
+.stop-info h4 { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+.stop-info p { font-size: 12px; color: var(--text-muted); }
+
+.stop-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+
+.stop-item:hover .stop-actions { opacity: 1; }
+
+/* Routes list */
+.route-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+
+.route-color {
+  width: 24px;
+  height: 4px;
+  border-radius: 2px;
+  min-width: 24px;
+}
+
+.route-info { flex: 1; }
+.route-info h4 { font-size: 14px; font-weight: 600; }
+
+/* Photo grid */
+.photo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.photo-thumb {
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  cursor: pointer;
+  position: relative;
+  border: 2px solid transparent;
+  transition: all var(--transition);
+}
+
+.photo-thumb:hover { border-color: var(--accent); transform: scale(1.02); }
+
+.photo-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.photo-thumb .photo-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(transparent 50%, rgba(0,0,0,0.6));
+  opacity: 0;
+  transition: opacity var(--transition);
+  display: flex;
+  align-items: flex-end;
+  padding: 8px;
+}
+
+.photo-thumb:hover .photo-overlay { opacity: 1; }
+
+.photo-thumb .photo-overlay span {
+  font-size: 11px;
+  color: white;
+}
+
+.photo-no-location {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: var(--orange);
+  color: var(--navy);
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+/* Drop zone */
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 30px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition);
+  margin-bottom: 16px;
+}
+
+.drop-zone:hover,
+.drop-zone.dragover {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.drop-zone .drop-icon { font-size: 32px; margin-bottom: 8px; }
+.drop-zone p { font-size: 13px; color: var(--text-muted); }
+.drop-zone .drop-hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+/* Timeline view */
+.timeline {
+  position: relative;
+  padding-left: 28px;
+}
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 12px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--border);
+}
+
+.timeline-card {
+  position: relative;
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 16px;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.timeline-card:hover {
+  border-color: var(--orange);
+  transform: translateX(2px);
+}
+
+.timeline-card::before {
+  content: '';
+  position: absolute;
+  left: -22px;
+  top: 22px;
+  width: 12px;
+  height: 12px;
+  background: var(--orange);
+  border-radius: 50%;
+  border: 2px solid var(--navy);
+}
+
+.timeline-card .tc-date {
+  font-size: 11px;
+  color: var(--orange);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.timeline-card h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.timeline-card .tc-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.timeline-photos {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.timeline-photos img {
+  width: 80px;
+  height: 60px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+/* Share bar */
+.share-bar {
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.share-url-row {
+  display: flex;
+  gap: 8px;
+}
+
+.share-url-row input {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 12px;
+  font-family: monospace;
+}
+
+/* Photo popup on map */
+.maplibregl-popup-content {
+  background: var(--navy) !important;
+  border-radius: var(--radius) !important;
+  padding: 0 !important;
+  box-shadow: var(--shadow) !important;
+  max-width: 280px !important;
+}
+
+.maplibregl-popup-tip {
+  border-top-color: var(--navy) !important;
+}
+
+.maplibregl-popup-close-button {
+  color: white !important;
+  font-size: 18px !important;
+  right: 8px !important;
+  top: 4px !important;
+}
+
+.map-popup-photo img {
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+  border-radius: var(--radius) var(--radius) 0 0;
+  display: block;
+}
+
+.map-popup-photo .popup-caption {
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Map toolbar */
+.map-toolbar {
+  position: absolute;
+  top: 12px;
+  right: 60px;
+  z-index: 5;
+  display: flex;
+  gap: 8px;
+}
+
+.map-toolbar .btn {
+  box-shadow: var(--shadow);
+}
+
+/* Drawing mode indicator */
+.draw-indicator {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: var(--accent);
+  color: white;
+  padding: 8px 20px;
+  border-radius: 50px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  display: none;
+  gap: 8px;
+  align-items: center;
+}
+
+.draw-indicator.active { display: flex; }
+
+/* Geotag mode indicator */
+.geotag-indicator {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: var(--green);
+  color: white;
+  padding: 8px 20px;
+  border-radius: 50px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  display: none;
+  gap: 8px;
+  align-items: center;
+}
+
+.geotag-indicator.active { display: flex; }
+
+/* Stop adding mode indicator */
+.stop-indicator {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  background: var(--orange);
+  color: var(--navy);
+  padding: 8px 20px;
+  border-radius: 50px;
+  font-size: 13px;
+  font-weight: 700;
+  box-shadow: var(--shadow);
+  display: none;
+  gap: 8px;
+  align-items: center;
+}
+
+.stop-indicator.active { display: flex; }
+
+/* Edit stop modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 200;
+  display: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-overlay.active { display: flex; }
+
+.modal {
+  background: var(--navy);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 28px;
+  width: 400px;
+  max-width: 90vw;
+  box-shadow: var(--shadow);
+}
+
+.modal h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 20px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+/* Photo detail modal */
+.photo-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 300;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.photo-modal-overlay.active { display: flex; }
+
+.photo-modal-overlay img {
+  max-width: 90vw;
+  max-height: 70vh;
+  object-fit: contain;
+  border-radius: var(--radius);
+}
+
+.photo-modal-info {
+  background: var(--navy);
+  border-radius: var(--radius);
+  padding: 16px 24px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.photo-modal-info input {
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 12px;
+  font-size: 14px;
+  width: 220px;
+}
+
+.photo-modal-info input:focus { outline: none; border-color: var(--accent); }
+
+/* Read-only badge */
+.readonly-badge {
+  display: none;
+  background: var(--navy-lighter);
+  color: var(--text-muted);
+  padding: 6px 14px;
+  border-radius: 50px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+body.readonly .readonly-badge { display: inline-flex; }
+body.readonly .edit-only { display: none !important; }
+
+/* Empty states */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text-muted);
+}
+
+.empty-state .empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.empty-state h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.empty-state p {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Loading spinner */
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 40px auto;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Toast notification */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 10000;
+  align-items: center;
+  justify-content: center;
+}
+.modal-overlay.active { display: flex; }
+.modal-box {
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  min-width: 340px;
+  max-width: 90vw;
+  box-shadow: var(--shadow);
+}
+.modal-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--text);
+}
+.modal-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--navy);
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+  margin-bottom: 16px;
+}
+.modal-input:focus { border-color: var(--accent); }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.modal-btn {
+  padding: 8px 20px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.modal-btn.cancel { background: var(--navy-lighter); color: var(--text-muted); }
+.modal-btn.cancel:hover { background: var(--border); }
+.modal-btn.confirm { background: var(--accent); color: white; }
+.modal-btn.confirm:hover { background: var(--accent-hover); }
+
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toast {
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 12px 18px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: var(--shadow);
+  animation: toastIn 0.3s ease;
+  max-width: 320px;
+}
+
+.toast.error { border-color: var(--red); }
+.toast.success { border-color: var(--green); }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    min-width: 100%;
+    height: 55vh;
+    border-right: none;
+    border-top: 1px solid var(--border);
+    border-radius: 20px 20px 0 0;
+    transform: translateY(calc(100% - 60px));
+    transition: transform 0.3s ease;
+  }
+
+  .sidebar.open {
+    transform: translateY(0);
+  }
+
+  .sidebar::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin: 10px auto 6px;
+    flex-shrink: 0;
+  }
+
+  .mobile-toggle { display: block; }
+
+  .map-container { width: 100%; height: 100vh; }
+
+  .map-toolbar { right: 12px; }
+
+  .photo-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+/* Custom map markers */
+.stop-marker {
+  width: 32px;
+  height: 32px;
+  background: var(--orange);
+  border: 3px solid white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--navy);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  transition: transform 0.15s ease;
+}
+
+.stop-marker:hover { transform: scale(1.15); }
+
+.photo-marker {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid white;
+  overflow: hidden;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  transition: transform 0.15s ease;
+  background: var(--navy);
+}
+
+.photo-marker:hover { transform: scale(1.2); }
+
+.photo-marker img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+</style>
+</head>
+<body>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- Prompt Modal -->
+<div class="modal-overlay" id="promptModal">
+  <div class="modal-box">
+    <div class="modal-title" id="promptTitle">Enter value</div>
+    <input type="text" class="modal-input" id="promptInput" placeholder="" autofocus>
+    <div class="modal-actions">
+      <button class="modal-btn cancel" id="promptCancel">Cancel</button>
+      <button class="modal-btn confirm" id="promptOK">OK</button>
+    </div>
+  </div>
+</div>
+
+<!-- Photo lightbox modal -->
+<div class="photo-modal-overlay" id="photoModal">
+  <img id="photoModalImg" src="" alt="">
+  <div class="photo-modal-info">
+    <input type="text" id="photoModalCaption" placeholder="Add a caption...">
+    <button class="btn btn-primary btn-sm edit-only" id="photoModalSave">Save</button>
+    <button class="btn btn-secondary btn-sm edit-only" id="photoModalGeotag">📍 Set Location</button>
+    <button class="btn btn-danger btn-sm edit-only" id="photoModalDelete">Delete</button>
+    <button class="btn btn-ghost btn-sm" id="photoModalClose">✕ Close</button>
+  </div>
+</div>
+
+<!-- Edit stop modal -->
+<div class="modal-overlay" id="editStopModal">
+  <div class="modal">
+    <h2 id="editStopTitle">Edit Stop</h2>
+    <div class="form-group">
+      <label>Title</label>
+      <input type="text" class="form-input" id="editStopName">
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <textarea class="form-input" id="editStopDesc"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Arrived At</label>
+      <input type="datetime-local" class="form-input" id="editStopDate">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="editStopCancel">Cancel</button>
+      <button class="btn btn-primary" id="editStopSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Create trip modal -->
+<div class="modal-overlay" id="createTripModal">
+  <div class="modal">
+    <h2>New Trip</h2>
+    <div class="form-group">
+      <label>Title</label>
+      <input type="text" class="form-input" id="newTripTitle" placeholder="My Adventure">
+    </div>
+    <div class="form-group">
+      <label>Description</label>
+      <textarea class="form-input" id="newTripDesc" placeholder="Where are you going?"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="createTripCancel">Cancel</button>
+      <button class="btn btn-primary" id="createTripSave">Create Trip</button>
+    </div>
+  </div>
+</div>
+
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <h1><span>🌍</span> My Travels</h1>
+      <div class="header-actions">
+        <span class="readonly-badge">👁 View Only</span>
+      </div>
+    </div>
+
+    <div class="nav-bar" id="navBar">
+      <button class="back-btn" id="backBtn">← Back</button>
+      <span class="breadcrumb" id="breadcrumb"></span>
+    </div>
+
+    <div class="tab-bar" id="tabBar">
+      <button class="tab-btn active" data-tab="detail">📋 Details</button>
+      <button class="tab-btn" data-tab="timeline">📖 Timeline</button>
+    </div>
+
+    <div class="sidebar-content" id="sidebarContent">
+      <!-- TRIPS LIST VIEW -->
+      <div class="view-panel active" id="tripsListView">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+          <h2 style="font-size:16px;font-weight:700">Your Trips</h2>
+          <button class="btn btn-primary btn-sm edit-only" id="newTripBtn">+ New Trip</button>
+        </div>
+        <div id="tripsList"></div>
+      </div>
+
+      <!-- TRIP DETAIL VIEW -->
+      <div class="view-panel" id="tripDetailView">
+        <div id="tripDetailContent"></div>
+      </div>
+
+      <!-- TIMELINE VIEW -->
+      <div class="view-panel" id="timelineView">
+        <div id="timelineContent"></div>
+      </div>
+    </div>
+
+    <div class="share-bar" id="shareBar" style="display:none">
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Share Link</div>
+      <div class="share-url-row">
+        <input type="text" id="shareUrl" readonly>
+        <button class="btn btn-secondary btn-sm" id="copyShareBtn">Copy</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Map -->
+  <div class="map-container">
+    <div id="map"></div>
+
+    <div class="draw-indicator" id="drawIndicator">
+      <span>🖊 Drawing route — click to add points, double-click to finish</span>
+      <button class="btn btn-sm btn-danger" id="cancelDraw">Cancel</button>
+    </div>
+
+    <div class="geotag-indicator" id="geotagIndicator">
+      <span>📍 Click on the map to set photo location</span>
+      <button class="btn btn-sm btn-danger" id="cancelGeotag">Cancel</button>
+    </div>
+
+    <div class="stop-indicator" id="stopIndicator">
+      <span>📌 Click on the map to add a stop</span>
+      <button class="btn btn-sm btn-danger" id="cancelStop">Cancel</button>
+    </div>
+
+    <button class="mobile-toggle" id="mobileToggle">☰ Menu</button>
+  </div>
+</div>
+
+<script>
+(function() {
+"use strict";
+
+// ---------------------------------------------------------------
+// State
+// ---------------------------------------------------------------
+const state = {
+  trips: [],
+  currentTrip: null,
+  currentView: 'list',    // list | detail | timeline
+  currentTab: 'detail',   // detail | timeline
+  readOnly: false,
+  shareID: null,
+  drawMode: false,
+  drawPoints: [],
+  geotagMode: false,
+  geotagPhotoId: null,
+  addStopMode: false,
+  selectedPhotoId: null,
+  mapMarkers: [],
+  photoMarkers: [],
+};
+
+// ---------------------------------------------------------------
+// Detect share mode from URL
+// ---------------------------------------------------------------
+const pathParts = window.location.pathname.split('/');
+if (pathParts[1] === 'share' && pathParts[2]) {
+  state.readOnly = true;
+  state.shareID = pathParts[2];
+  document.body.classList.add('readonly');
+}
+
+// ---------------------------------------------------------------
+// DOM refs
+// ---------------------------------------------------------------
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+const sidebar = $('#sidebar');
+const navBar = $('#navBar');
+const tabBar = $('#tabBar');
+const tripsListView = $('#tripsListView');
+const tripDetailView = $('#tripDetailView');
+const timelineView = $('#timelineView');
+const tripsList = $('#tripsList');
+const tripDetailContent = $('#tripDetailContent');
+const timelineContent = $('#timelineContent');
+const shareBar = $('#shareBar');
+const shareUrl = $('#shareUrl');
+const toastContainer = $('#toastContainer');
+
+// ---------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------
+function customPrompt(title, defaultVal) {
+  return new Promise((resolve) => {
+    const overlay = $('#promptModal');
+    const input = $('#promptInput');
+    const okBtn = $('#promptOK');
+    const cancelBtn = $('#promptCancel');
+    $('#promptTitle').textContent = title;
+    input.value = defaultVal || '';
+    overlay.classList.add('active');
+    input.focus();
+    function cleanup() {
+      overlay.classList.remove('active');
+      okBtn.removeEventListener('click', onOK);
+      cancelBtn.removeEventListener('click', onCancel);
+      input.removeEventListener('keydown', onKey);
+    }
+    function onOK() { cleanup(); resolve(input.value); }
+    function onCancel() { cleanup(); resolve(null); }
+    function onKey(e) { if(e.key==='Enter') onOK(); if(e.key==='Escape') onCancel(); }
+    okBtn.addEventListener('click', onOK);
+    cancelBtn.addEventListener('click', onCancel);
+    input.addEventListener('keydown', onKey);
+  });
+}
+
+function toast(msg, type) {
+  type = type || 'success';
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  toastContainer.appendChild(el);
+  setTimeout(() => { el.remove(); }, 3000);
+}
+
+async function api(method, path, body) {
+  const opts = { method: method, headers: {} };
+  if (body && !(body instanceof FormData)) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  } else if (body instanceof FormData) {
+    opts.body = body;
+  }
+  const res = await fetch(path, opts);
+  if (res.status === 204) return null;
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'API error');
+  return data;
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function escapeHtml(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ---------------------------------------------------------------
+// Map setup
+// ---------------------------------------------------------------
+let map; window._map = null;
+
+function initMap() {
+  map = new maplibregl.Map({
+    container: 'map',
+    style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
+    center: [10, 45],
+    zoom: 3,
+    pitch: 50,
+    bearing: -10,
+    maxPitch: 85,
+    antialias: true,
+  });
+
+  window._map = map;
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  map.addControl(new maplibregl.ScaleControl(), 'bottom-right');
+
+  map.on('load', () => {
+    // Add 3D terrain
+    map.addSource('terrainSource', {
+      type: 'raster-dem',
+      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+      encoding: 'terrarium',
+      tileSize: 256,
+      maxzoom: 15,
+    });
+    map.setTerrain({ source: 'terrainSource', exaggeration: 1.5 });
+
+    // Add sky for 3D atmosphere
+    map.addLayer({
+      id: 'sky',
+      type: 'sky',
+      paint: {
+        'sky-type': 'atmosphere',
+        'sky-atmosphere-sun': [0, 0],
+        'sky-atmosphere-sun-intensity': 15,
+      },
+    });
+
+    // If in share mode, load that trip
+    if (state.shareID) {
+      loadSharedTrip(state.shareID);
+    } else {
+      loadTrips();
+    }
+  });
+
+  // Map click handler for drawing / geotagging / adding stops
+  map.on('click', onMapClick);
+  map.on('dblclick', onMapDoubleClick);
+}
+
+function onMapClick(e) {
+  const lngLat = e.lngLat;
+
+  if (state.drawMode) {
+    state.drawPoints.push([lngLat.lng, lngLat.lat]);
+    updateDrawPreview();
+    return;
+  }
+
+  if (state.geotagMode && state.geotagPhotoId) {
+    setPhotoLocation(state.geotagPhotoId, lngLat.lat, lngLat.lng);
+    return;
+  }
+
+  if (state.addStopMode) {
+    addStopAtLocation(lngLat.lat, lngLat.lng);
+    return;
+  }
+}
+
+function onMapDoubleClick(e) {
+  if (state.drawMode && state.drawPoints.length >= 2) {
+    e.preventDefault();
+    finishDrawing();
+  }
+}
+
+// ---------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------
+function showView(view) {
+  state.currentView = view;
+  tripsListView.classList.remove('active');
+  tripDetailView.classList.remove('active');
+  timelineView.classList.remove('active');
+
+  if (view === 'list') {
+    tripsListView.classList.add('active');
+    navBar.classList.remove('active');
+    tabBar.classList.remove('active');
+    shareBar.style.display = 'none';
+    clearMapData();
+  } else if (view === 'detail') {
+    tripDetailView.classList.add('active');
+    navBar.classList.add('active');
+    tabBar.classList.add('active');
+    state.currentTab = 'detail';
+    updateTabs();
+    if (state.currentTrip && !state.readOnly) {
+      shareBar.style.display = 'block';
+    }
+  } else if (view === 'timeline') {
+    timelineView.classList.add('active');
+    navBar.classList.add('active');
+    tabBar.classList.add('active');
+    state.currentTab = 'timeline';
+    updateTabs();
+    if (state.currentTrip && !state.readOnly) {
+      shareBar.style.display = 'block';
+    }
+  }
+}
+
+function updateTabs() {
+  $$('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === state.currentTab);
+  });
+}
+
+// Tab clicks
+$$('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.currentTab = btn.dataset.tab;
+    updateTabs();
+    if (btn.dataset.tab === 'detail') {
+      showView('detail');
+    } else if (btn.dataset.tab === 'timeline') {
+      showView('timeline');
+      renderTimeline();
+    }
+  });
+});
+
+// Back button
+$('#backBtn').addEventListener('click', () => {
+  if (state.readOnly) return;
+  state.currentTrip = null;
+  showView('list');
+  loadTrips();
+});
+
+// Mobile toggle
+$('#mobileToggle').addEventListener('click', () => {
+  sidebar.classList.toggle('open');
+});
+
+// ---------------------------------------------------------------
+// Trips List
+// ---------------------------------------------------------------
+async function loadTrips() {
+  try {
+    tripsList.innerHTML = '<div class="spinner"></div>';
+    state.trips = await api('GET', '/api/trips');
+    renderTripsList();
+  } catch (err) {
+    tripsList.innerHTML = '<div class="empty-state"><p>Failed to load trips</p></div>';
+    toast(err.message, 'error');
+  }
+}
+
+function renderTripsList() {
+  if (!state.trips || state.trips.length === 0) {
+    tripsList.innerHTML = '<div class="empty-state"><div class="empty-icon">🗺️</div><h3>No trips yet</h3><p>Create your first trip to start mapping your adventures!</p></div>';
+    return;
+  }
+  tripsList.innerHTML = state.trips.map(trip => {
+    return '<div class="trip-card" data-id="' + escapeHtml(trip.id) + '">'
+      + '<button class="delete-trip-btn edit-only" data-id="' + escapeHtml(trip.id) + '" title="Delete trip">🗑</button>'
+      + '<h3>' + escapeHtml(trip.title) + '</h3>'
+      + '<p>' + escapeHtml(trip.description || 'No description') + '</p>'
+      + '<div class="trip-meta">'
+      + '<span>📅 ' + formatDate(trip.created_at) + '</span>'
+      + '</div>'
+      + '</div>';
+  }).join('');
+
+  // Card click
+  $$('.trip-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.classList.contains('delete-trip-btn')) return;
+      loadTrip(card.dataset.id);
+    });
+  });
+
+  // Delete buttons
+  $$('.delete-trip-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete this trip? This cannot be undone.')) return;
+      try {
+        await api('DELETE', '/api/trips/' + btn.dataset.id);
+        toast('Trip deleted');
+        loadTrips();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------
+// Create trip
+// ---------------------------------------------------------------
+$('#newTripBtn').addEventListener('click', () => {
+  $('#createTripModal').classList.add('active');
+  $('#newTripTitle').value = '';
+  $('#newTripDesc').value = '';
+  $('#newTripTitle').focus();
+});
+
+$('#createTripCancel').addEventListener('click', () => {
+  $('#createTripModal').classList.remove('active');
+});
+
+$('#createTripSave').addEventListener('click', async () => {
+  const title = $('#newTripTitle').value.trim();
+  const desc = $('#newTripDesc').value.trim();
+  if (!title) { toast('Title is required', 'error'); return; }
+  try {
+    const trip = await api('POST', '/api/trips', { title: title, description: desc });
+    $('#createTripModal').classList.remove('active');
+    toast('Trip created!');
+    loadTrip(trip.id);
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+// Enter to submit
+$('#newTripTitle').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); $('#createTripSave').click(); }
+});
+
+// ---------------------------------------------------------------
+// Load single trip
+// ---------------------------------------------------------------
+async function loadTrip(id) {
+  try {
+    const trip = await api('GET', '/api/trips/' + id);
+    state.currentTrip = trip;
+    $('#breadcrumb').textContent = trip.title;
+    shareUrl.value = window.location.origin + '/share/' + trip.share_id;
+    showView('detail');
+    renderTripDetail();
+    renderMapData();
+    if (sidebar.classList.contains('open')) {
+      // keep open on mobile
+    }
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+async function loadSharedTrip(shareId) {
+  try {
+    const trip = await api('GET', '/api/share/' + shareId);
+    state.currentTrip = trip;
+    $('#breadcrumb').textContent = trip.title;
+    navBar.classList.add('active');
+    // hide back button in share mode
+    $('#backBtn').style.display = 'none';
+    showView('detail');
+    renderTripDetail();
+    renderMapData();
+  } catch (err) {
+    toast('Trip not found', 'error');
+  }
+}
+
+async function reloadCurrentTrip() {
+  if (!state.currentTrip) return;
+  if (state.readOnly && state.shareID) {
+    await loadSharedTrip(state.shareID);
+  } else {
+    await loadTrip(state.currentTrip.id);
+  }
+}
+
+// ---------------------------------------------------------------
+// Trip Detail Rendering
+// ---------------------------------------------------------------
+function renderTripDetail() {
+  const trip = state.currentTrip;
+  if (!trip) return;
+
+  const stops = trip.stops || [];
+  const photos = trip.photos || [];
+  const routes = trip.routes || [];
+
+  let html = '';
+
+  // Trip info
+  html += '<div style="margin-bottom:8px">';
+  html += '<h2 style="font-size:20px;font-weight:700;margin-bottom:4px">' + escapeHtml(trip.title) + '</h2>';
+  if (trip.description) {
+    html += '<p style="font-size:13px;color:var(--text-muted);line-height:1.5">' + escapeHtml(trip.description) + '</p>';
+  }
+  html += '</div>';
+
+  // ---- STOPS ----
+  html += '<div class="section-header">';
+  html += '<h3>📌 Stops (' + stops.length + ')</h3>';
+  html += '<button class="btn btn-orange btn-sm edit-only" id="addStopBtn">+ Add Stop</button>';
+  html += '</div>';
+
+  if (stops.length === 0) {
+    html += '<p style="font-size:13px;color:var(--text-dim);margin-bottom:8px">No stops yet. Click the map to add one!</p>';
+  } else {
+    stops.sort((a, b) => a.stop_order - b.stop_order);
+    stops.forEach((stop, i) => {
+      html += '<div class="stop-item" data-stop-id="' + escapeHtml(stop.id) + '">';
+      html += '<div class="stop-number">' + (i + 1) + '</div>';
+      html += '<div class="stop-info">';
+      html += '<h4>' + escapeHtml(stop.title || 'Untitled Stop') + '</h4>';
+      if (stop.description) html += '<p>' + escapeHtml(stop.description) + '</p>';
+      if (stop.arrived_at) html += '<p style="color:var(--orange);margin-top:2px">' + formatDate(stop.arrived_at) + '</p>';
+      html += '</div>';
+      html += '<div class="stop-actions">';
+      html += '<button class="btn btn-ghost btn-sm edit-only edit-stop-btn" data-stop-id="' + escapeHtml(stop.id) + '" title="Edit">✏️</button>';
+      html += '<button class="btn btn-ghost btn-sm edit-only delete-stop-btn" data-stop-id="' + escapeHtml(stop.id) + '" title="Delete">🗑</button>';
+      html += '</div>';
+      html += '</div>';
+    });
+  }
+
+  // ---- ROUTES ----
+  html += '<div class="section-header">';
+  html += '<h3>🛤 Routes (' + routes.length + ')</h3>';
+  html += '<div class="edit-only" style="display:flex;gap:6px">';
+  html += '<button class="btn btn-secondary btn-sm" id="importGpxBtn">📂 GPX</button>';
+  html += '<button class="btn btn-primary btn-sm" id="drawRouteBtn">🖊 Draw</button>';
+  html += '</div>';
+  html += '</div>';
+
+  if (routes.length === 0) {
+    html += '<p style="font-size:13px;color:var(--text-dim);margin-bottom:8px">No routes yet. Import a GPX file or draw one!</p>';
+  } else {
+    routes.forEach(route => {
+      html += '<div class="route-item">';
+      html += '<div class="route-color" style="background:' + escapeHtml(route.color || '#3388ff') + '"></div>';
+      html += '<div class="route-info"><h4>' + escapeHtml(route.name) + '</h4></div>';
+      html += '<button class="btn btn-ghost btn-sm edit-only delete-route-btn" data-route-id="' + escapeHtml(route.id) + '" title="Delete">🗑</button>';
+      html += '</div>';
+    });
+  }
+
+  // ---- PHOTOS ----
+  html += '<div class="section-header">';
+  html += '<h3>📸 Photos (' + photos.length + ')</h3>';
+  html += '</div>';
+
+  // Drop zone
+  html += '<div class="drop-zone edit-only" id="photoDropZone">';
+  html += '<div class="drop-icon">📷</div>';
+  html += '<p>Drop photos here or click to upload</p>';
+  html += '<p class="drop-hint">JPG, PNG up to 32MB</p>';
+  html += '<input type="file" id="photoFileInput" accept="image/*" multiple style="display:none">';
+  html += '</div>';
+
+  if (photos.length > 0) {
+    html += '<div class="photo-grid">';
+    photos.forEach(photo => {
+      const hasLocation = photo.lat != null && photo.lng != null;
+      html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '">';
+      html += '<img src="/uploads/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
+      html += '<div class="photo-overlay"><span>' + escapeHtml(photo.caption || photo.original_name) + '</span></div>';
+      if (!hasLocation) {
+        html += '<span class="photo-no-location">No 📍</span>';
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+
+  // Hidden GPX file input
+  html += '<input type="file" id="gpxFileInput" accept=".gpx" style="display:none">';
+
+  tripDetailContent.innerHTML = html;
+
+  // --- Wire up events ---
+  wireDetailEvents();
+}
+
+function wireDetailEvents() {
+  const trip = state.currentTrip;
+  if (!trip) return;
+
+  // Add stop button
+  const addStopBtn = $('#addStopBtn');
+  if (addStopBtn) {
+    addStopBtn.addEventListener('click', () => {
+      state.addStopMode = true;
+      $('#stopIndicator').classList.add('active');
+      map.getCanvas().style.cursor = 'crosshair';
+    });
+  }
+
+  // Cancel add stop
+  $('#cancelStop').addEventListener('click', () => {
+    state.addStopMode = false;
+    $('#stopIndicator').classList.remove('active');
+    map.getCanvas().style.cursor = '';
+  });
+
+  // Stop items — click to fly
+  $$('.stop-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.edit-stop-btn') || e.target.closest('.delete-stop-btn')) return;
+      const sid = el.dataset.stopId;
+      const stop = (trip.stops || []).find(s => s.id === sid);
+      if (stop) {
+        map.flyTo({ center: [stop.lng, stop.lat], zoom: 14, pitch: 50 });
+      }
+    });
+  });
+
+  // Edit stop buttons
+  $$('.edit-stop-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEditStop(btn.dataset.stopId);
+    });
+  });
+
+  // Delete stop buttons
+  $$('.delete-stop-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete this stop?')) return;
+      try {
+        await api('DELETE', '/api/stops/' + btn.dataset.stopId);
+        toast('Stop deleted');
+        reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  // Import GPX
+  const importBtn = $('#importGpxBtn');
+  const gpxInput = $('#gpxFileInput');
+  if (importBtn && gpxInput) {
+    importBtn.addEventListener('click', () => gpxInput.click());
+    gpxInput.addEventListener('change', async () => {
+      const file = gpxInput.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('gpx', file);
+      try {
+        await api('POST', '/api/trips/' + trip.id + '/routes', fd);
+        toast('GPX route imported!');
+        reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  }
+
+  // Draw route
+  const drawBtn = $('#drawRouteBtn');
+  if (drawBtn) {
+    drawBtn.addEventListener('click', startDrawing);
+  }
+
+  // Delete route
+  $$('.delete-route-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Delete this route?')) return;
+      try {
+        await api('DELETE', '/api/routes/' + btn.dataset.routeId);
+        toast('Route deleted');
+        reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  // Photo drop zone
+  const dz = $('#photoDropZone');
+  const fi = $('#photoFileInput');
+  if (dz && fi) {
+    dz.addEventListener('click', () => fi.click());
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('dragover'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('dragover'));
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dz.classList.remove('dragover');
+      uploadPhotos(e.dataTransfer.files);
+    });
+    fi.addEventListener('change', () => {
+      uploadPhotos(fi.files);
+    });
+  }
+
+  // Photo clicks
+  $$('.photo-thumb').forEach(thumb => {
+    thumb.addEventListener('click', () => {
+      openPhotoModal(thumb.dataset.photoId);
+    });
+  });
+}
+
+// ---------------------------------------------------------------
+// Photo upload
+// ---------------------------------------------------------------
+async function uploadPhotos(files) {
+  const trip = state.currentTrip;
+  if (!trip) return;
+
+  for (let i = 0; i < files.length; i++) {
+    const fd = new FormData();
+    fd.append('photo', files[i]);
+    try {
+      await api('POST', '/api/trips/' + trip.id + '/photos', fd);
+    } catch (err) {
+      toast('Failed to upload ' + files[i].name, 'error');
+    }
+  }
+  toast(files.length + ' photo(s) uploaded!');
+  reloadCurrentTrip();
+}
+
+// ---------------------------------------------------------------
+// Photo modal
+// ---------------------------------------------------------------
+function openPhotoModal(photoId) {
+  const trip = state.currentTrip;
+  if (!trip) return;
+  const photo = (trip.photos || []).find(p => p.id === photoId);
+  if (!photo) return;
+
+  state.selectedPhotoId = photoId;
+  $('#photoModalImg').src = '/uploads/' + photo.filename;
+  $('#photoModalCaption').value = photo.caption || '';
+  $('#photoModal').classList.add('active');
+}
+
+$('#photoModalClose').addEventListener('click', () => {
+  $('#photoModal').classList.remove('active');
+  state.selectedPhotoId = null;
+});
+
+$('#photoModal').addEventListener('click', (e) => {
+  if (e.target === $('#photoModal')) {
+    $('#photoModal').classList.remove('active');
+    state.selectedPhotoId = null;
+  }
+});
+
+$('#photoModalSave').addEventListener('click', async () => {
+  if (!state.selectedPhotoId) return;
+  const photo = (state.currentTrip.photos || []).find(p => p.id === state.selectedPhotoId);
+  if (!photo) return;
+  try {
+    await api('PUT', '/api/photos/' + photo.id, {
+      caption: $('#photoModalCaption').value,
+      lat: photo.lat,
+      lng: photo.lng,
+      stop_id: photo.stop_id,
+    });
+    toast('Caption saved');
+    reloadCurrentTrip();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+$('#photoModalGeotag').addEventListener('click', () => {
+  if (!state.selectedPhotoId) return;
+  state.geotagMode = true;
+  state.geotagPhotoId = state.selectedPhotoId;
+  $('#photoModal').classList.remove('active');
+  $('#geotagIndicator').classList.add('active');
+  map.getCanvas().style.cursor = 'crosshair';
+});
+
+$('#cancelGeotag').addEventListener('click', () => {
+  state.geotagMode = false;
+  state.geotagPhotoId = null;
+  $('#geotagIndicator').classList.remove('active');
+  map.getCanvas().style.cursor = '';
+});
+
+$('#photoModalDelete').addEventListener('click', async () => {
+  if (!state.selectedPhotoId) return;
+  if (!confirm('Delete this photo?')) return;
+  try {
+    await api('DELETE', '/api/photos/' + state.selectedPhotoId);
+    toast('Photo deleted');
+    $('#photoModal').classList.remove('active');
+    state.selectedPhotoId = null;
+    reloadCurrentTrip();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
+async function setPhotoLocation(photoId, lat, lng) {
+  const photo = (state.currentTrip.photos || []).find(p => p.id === photoId);
+  if (!photo) return;
+  try {
+    await api('PUT', '/api/photos/' + photoId, {
+      caption: photo.caption || '',
+      lat: lat,
+      lng: lng,
+      stop_id: photo.stop_id,
+    });
+    toast('Photo location set!');
+    state.geotagMode = false;
+    state.geotagPhotoId = null;
+    $('#geotagIndicator').classList.remove('active');
+    map.getCanvas().style.cursor = '';
+    reloadCurrentTrip();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+// ---------------------------------------------------------------
+// Stops
+// ---------------------------------------------------------------
+async function addStopAtLocation(lat, lng) {
+  const trip = state.currentTrip;
+  if (!trip) return;
+  state.addStopMode = false;
+  $('#stopIndicator').classList.remove('active');
+  map.getCanvas().style.cursor = '';
+
+  const title = await customPrompt('Stop name:', '');
+  if (title === null) return;
+
+  try {
+    await api('POST', '/api/trips/' + trip.id + '/stops', {
+      title: title || 'New Stop',
+      description: '',
+      lat: lat,
+      lng: lng,
+    });
+    toast('Stop added!');
+    reloadCurrentTrip();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+function openEditStop(stopId) {
+  const trip = state.currentTrip;
+  if (!trip) return;
+  const stop = (trip.stops || []).find(s => s.id === stopId);
+  if (!stop) return;
+
+  $('#editStopTitle').textContent = 'Edit Stop';
+  $('#editStopName').value = stop.title || '';
+  $('#editStopDesc').value = stop.description || '';
+  if (stop.arrived_at) {
+    const d = new Date(stop.arrived_at);
+    // format for datetime-local input
+    const pad = (n) => String(n).padStart(2, '0');
+    const val = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    $('#editStopDate').value = val;
+  } else {
+    $('#editStopDate').value = '';
+  }
+  $('#editStopModal').classList.add('active');
+
+  // Wire save
+  const saveHandler = async () => {
+    const arrived = $('#editStopDate').value ? new Date($('#editStopDate').value).toISOString() : null;
+    try {
+      await api('PUT', '/api/stops/' + stopId, {
+        title: $('#editStopName').value,
+        description: $('#editStopDesc').value,
+        lat: stop.lat,
+        lng: stop.lng,
+        elevation: stop.elevation || 0,
+        stop_order: stop.stop_order,
+        arrived_at: arrived,
+      });
+      toast('Stop updated');
+      $('#editStopModal').classList.remove('active');
+      $('#editStopSave').removeEventListener('click', saveHandler);
+      reloadCurrentTrip();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  };
+
+  // Remove old listeners by cloning
+  const oldSave = $('#editStopSave');
+  const newSave = oldSave.cloneNode(true);
+  oldSave.parentNode.replaceChild(newSave, oldSave);
+  newSave.addEventListener('click', saveHandler);
+
+  const oldCancel = $('#editStopCancel');
+  const newCancel = oldCancel.cloneNode(true);
+  oldCancel.parentNode.replaceChild(newCancel, oldCancel);
+  newCancel.addEventListener('click', () => {
+    $('#editStopModal').classList.remove('active');
+  });
+}
+
+// ---------------------------------------------------------------
+// Route Drawing
+// ---------------------------------------------------------------
+function startDrawing() {
+  state.drawMode = true;
+  state.drawPoints = [];
+  $('#drawIndicator').classList.add('active');
+  map.getCanvas().style.cursor = 'crosshair';
+
+  // Add empty source for preview
+  if (!map.getSource('draw-preview')) {
+    map.addSource('draw-preview', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    });
+    map.addLayer({
+      id: 'draw-preview-line',
+      type: 'line',
+      source: 'draw-preview',
+      paint: {
+        'line-color': '#3b82f6',
+        'line-width': 3,
+        'line-dasharray': [2, 2],
+      },
+    });
+    map.addLayer({
+      id: 'draw-preview-points',
+      type: 'circle',
+      source: 'draw-preview',
+      filter: ['==', '$type', 'Point'],
+      paint: {
+        'circle-radius': 5,
+        'circle-color': '#3b82f6',
+        'circle-stroke-color': '#fff',
+        'circle-stroke-width': 2,
+      },
+    });
+  }
+}
+
+function updateDrawPreview() {
+  if (!map.getSource('draw-preview')) return;
+  const features = [];
+
+  if (state.drawPoints.length >= 2) {
+    features.push({
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'LineString', coordinates: state.drawPoints },
+    });
+  }
+
+  state.drawPoints.forEach(pt => {
+    features.push({
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Point', coordinates: pt },
+    });
+  });
+
+  map.getSource('draw-preview').setData({
+    type: 'FeatureCollection',
+    features: features,
+  });
+}
+
+async function finishDrawing() {
+  state.drawMode = false;
+  $('#drawIndicator').classList.remove('active');
+  map.getCanvas().style.cursor = '';
+
+  // Clear preview
+  if (map.getSource('draw-preview')) {
+    map.getSource('draw-preview').setData({ type: 'FeatureCollection', features: [] });
+  }
+
+  if (state.drawPoints.length < 2) {
+    toast('Need at least 2 points', 'error');
+    return;
+  }
+
+  const name = await customPrompt('Route name:', 'My Route') || 'My Route';
+
+  const geojsonObj = {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: { name: name },
+      geometry: { type: 'LineString', coordinates: state.drawPoints },
+    }],
+  };
+
+  try {
+    await api('POST', '/api/trips/' + state.currentTrip.id + '/routes', {
+      name: name,
+      geojson: JSON.stringify(geojsonObj),
+      color: '#3b82f6',
+    });
+    toast('Route saved!');
+    state.drawPoints = [];
+    reloadCurrentTrip();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+}
+
+$('#cancelDraw').addEventListener('click', () => {
+  state.drawMode = false;
+  state.drawPoints = [];
+  $('#drawIndicator').classList.remove('active');
+  map.getCanvas().style.cursor = '';
+  if (map.getSource('draw-preview')) {
+    map.getSource('draw-preview').setData({ type: 'FeatureCollection', features: [] });
+  }
+});
+
+// ---------------------------------------------------------------
+// Map data rendering
+// ---------------------------------------------------------------
+function clearMapData() {
+  // Remove stop markers
+  state.mapMarkers.forEach(m => m.remove());
+  state.mapMarkers = [];
+
+  // Remove photo markers
+  state.photoMarkers.forEach(m => m.remove());
+  state.photoMarkers = [];
+
+  // Remove route layers/sources
+  const style = map.getStyle();
+  if (style && style.layers) {
+    style.layers.forEach(layer => {
+      if (layer.id.startsWith('route-')) {
+        map.removeLayer(layer.id);
+      }
+    });
+  }
+  if (style && style.sources) {
+    Object.keys(style.sources).forEach(src => {
+      if (src.startsWith('route-')) {
+        map.removeSource(src);
+      }
+    });
+  }
+}
+
+function renderMapData() {
+  clearMapData();
+  const trip = state.currentTrip;
+  if (!trip) return;
+
+  const stops = trip.stops || [];
+  const photos = trip.photos || [];
+  const routes = trip.routes || [];
+
+  // Render routes
+  routes.forEach((route, idx) => {
+    let geojson;
+    try {
+      geojson = typeof route.geojson === 'string' ? JSON.parse(route.geojson) : route.geojson;
+    } catch (e) {
+      return;
+    }
+
+    const srcId = 'route-' + route.id;
+    const layerId = 'route-line-' + route.id;
+
+    if (!map.getSource(srcId)) {
+      map.addSource(srcId, { type: 'geojson', data: geojson });
+    }
+    if (!map.getLayer(layerId)) {
+      map.addLayer({
+        id: layerId,
+        type: 'line',
+        source: srcId,
+        paint: {
+          'line-color': route.color || '#3388ff',
+          'line-width': 4,
+          'line-opacity': 0.8,
+        },
+        layout: {
+          'line-cap': 'round',
+          'line-join': 'round',
+        },
+      });
+    }
+  });
+
+  // Render stop markers
+  stops.sort((a, b) => a.stop_order - b.stop_order);
+  stops.forEach((stop, i) => {
+    const el = document.createElement('div');
+    el.className = 'stop-marker';
+    el.textContent = String(i + 1);
+    el.title = stop.title || 'Stop ' + (i + 1);
+
+    const marker = new maplibregl.Marker({ element: el, draggable: !state.readOnly })
+      .setLngLat([stop.lng, stop.lat])
+      .addTo(map);
+
+    // Popup on click
+    el.addEventListener('click', () => {
+      const popup = new maplibregl.Popup({ offset: 20, closeButton: true })
+        .setHTML('<div style="padding:12px;color:#1a1a2e"><strong>' + escapeHtml(stop.title) + '</strong>' +
+          (stop.description ? '<br><span style="font-size:12px;color:#666">' + escapeHtml(stop.description) + '</span>' : '') +
+          '</div>')
+        .setLngLat([stop.lng, stop.lat])
+        .addTo(map);
+    });
+
+    // Drag end — update stop location
+    if (!state.readOnly) {
+      marker.on('dragend', async () => {
+        const pos = marker.getLngLat();
+        try {
+          await api('PUT', '/api/stops/' + stop.id, {
+            title: stop.title,
+            description: stop.description,
+            lat: pos.lat,
+            lng: pos.lng,
+            elevation: stop.elevation || 0,
+            stop_order: stop.stop_order,
+            arrived_at: stop.arrived_at,
+          });
+          toast('Stop moved');
+          // Update local data
+          stop.lat = pos.lat;
+          stop.lng = pos.lng;
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+    }
+
+    state.mapMarkers.push(marker);
+  });
+
+  // Render photo markers
+  photos.forEach(photo => {
+    if (photo.lat == null || photo.lng == null) return;
+
+    const el = document.createElement('div');
+    el.className = 'photo-marker';
+    const img = document.createElement('img');
+    img.src = '/uploads/' + photo.filename;
+    img.alt = photo.caption || '';
+    el.appendChild(img);
+
+    const marker = new maplibregl.Marker({ element: el, draggable: !state.readOnly })
+      .setLngLat([photo.lng, photo.lat])
+      .addTo(map);
+
+    el.addEventListener('click', () => {
+      new maplibregl.Popup({ offset: 24, closeButton: true, maxWidth: '280px' })
+        .setHTML(
+          '<div class="map-popup-photo">' +
+          '<img src="/uploads/' + escapeHtml(photo.filename) + '" alt="">' +
+          (photo.caption ? '<div class="popup-caption">' + escapeHtml(photo.caption) + '</div>' : '') +
+          '</div>'
+        )
+        .setLngLat([photo.lng, photo.lat])
+        .addTo(map);
+    });
+
+    // Drag to reposition photo
+    if (!state.readOnly) {
+      marker.on('dragend', async () => {
+        const pos = marker.getLngLat();
+        try {
+          await api('PUT', '/api/photos/' + photo.id, {
+            caption: photo.caption || '',
+            lat: pos.lat,
+            lng: pos.lng,
+            stop_id: photo.stop_id,
+          });
+          toast('Photo moved');
+          photo.lat = pos.lat;
+          photo.lng = pos.lng;
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      });
+    }
+
+    state.photoMarkers.push(marker);
+  });
+
+  // Fit bounds to all data
+  fitMapToTrip();
+}
+
+function fitMapToTrip() {
+  const trip = state.currentTrip;
+  if (!trip) return;
+
+  const allCoords = [];
+
+  (trip.stops || []).forEach(s => allCoords.push([s.lng, s.lat]));
+  (trip.photos || []).forEach(p => {
+    if (p.lat != null && p.lng != null) allCoords.push([p.lng, p.lat]);
+  });
+
+  // Routes
+  (trip.routes || []).forEach(route => {
+    try {
+      const gj = typeof route.geojson === 'string' ? JSON.parse(route.geojson) : route.geojson;
+      if (gj.features) {
+        gj.features.forEach(f => {
+          if (f.geometry && f.geometry.coordinates) {
+            if (f.geometry.type === 'LineString') {
+              f.geometry.coordinates.forEach(c => allCoords.push([c[0], c[1]]));
+            }
+          }
+        });
+      }
+    } catch (e) {}
+  });
+
+  if (allCoords.length === 0) return;
+
+  if (allCoords.length === 1) {
+    map.flyTo({ center: allCoords[0], zoom: 12, pitch: 45 });
+    return;
+  }
+
+  const bounds = new maplibregl.LngLatBounds();
+  allCoords.forEach(c => bounds.extend(c));
+  map.fitBounds(bounds, { padding: 80, maxZoom: 15, pitch: 45 });
+}
+
+// ---------------------------------------------------------------
+// Timeline View
+// ---------------------------------------------------------------
+function renderTimeline() {
+  const trip = state.currentTrip;
+  if (!trip) return;
+
+  const stops = (trip.stops || []).slice().sort((a, b) => a.stop_order - b.stop_order);
+  const photos = trip.photos || [];
+
+  if (stops.length === 0) {
+    timelineContent.innerHTML = '<div class="empty-state"><div class="empty-icon">📖</div><h3>No story yet</h3><p>Add stops to your trip to see them here as a timeline!</p></div>';
+    return;
+  }
+
+  let html = '<div class="timeline">';
+  stops.forEach(stop => {
+    const stopPhotos = photos.filter(p => p.stop_id === stop.id);
+    // Also include photos near this stop (within ~500m)
+    const nearbyPhotos = photos.filter(p => {
+      if (p.stop_id) return false;
+      if (p.lat == null || p.lng == null) return false;
+      const dx = (p.lng - stop.lng) * Math.cos(stop.lat * Math.PI / 180) * 111320;
+      const dy = (p.lat - stop.lat) * 111320;
+      return Math.sqrt(dx * dx + dy * dy) < 500;
+    });
+    const allPhotos = stopPhotos.concat(nearbyPhotos);
+
+    html += '<div class="timeline-card" data-lat="' + stop.lat + '" data-lng="' + stop.lng + '">';
+    if (stop.arrived_at) {
+      html += '<div class="tc-date">' + formatDate(stop.arrived_at) + '</div>';
+    }
+    html += '<h3>' + escapeHtml(stop.title || 'Untitled Stop') + '</h3>';
+    if (stop.description) {
+      html += '<div class="tc-desc">' + escapeHtml(stop.description) + '</div>';
+    }
+    if (allPhotos.length > 0) {
+      html += '<div class="timeline-photos">';
+      allPhotos.forEach(p => {
+        html += '<img src="/uploads/' + escapeHtml(p.filename) + '" alt="' + escapeHtml(p.caption || '') + '" loading="lazy">';
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+
+  timelineContent.innerHTML = html;
+
+  // Click to fly
+  $$('.timeline-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const lat = parseFloat(card.dataset.lat);
+      const lng = parseFloat(card.dataset.lng);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        map.flyTo({ center: [lng, lat], zoom: 14, pitch: 50 });
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------
+// Share URL copy
+// ---------------------------------------------------------------
+$('#copyShareBtn').addEventListener('click', () => {
+  shareUrl.select();
+  navigator.clipboard.writeText(shareUrl.value).then(() => {
+    toast('Share link copied!');
+  }).catch(() => {
+    document.execCommand('copy');
+    toast('Share link copied!');
+  });
+});
+
+// ---------------------------------------------------------------
+// Keyboard shortcuts
+// ---------------------------------------------------------------
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    // Close modals
+    $('#createTripModal').classList.remove('active');
+    $('#editStopModal').classList.remove('active');
+    if ($('#photoModal').classList.contains('active')) {
+      $('#photoModal').classList.remove('active');
+      state.selectedPhotoId = null;
+    }
+    // Cancel modes
+    if (state.drawMode) {
+      state.drawMode = false;
+      state.drawPoints = [];
+      $('#drawIndicator').classList.remove('active');
+      map.getCanvas().style.cursor = '';
+      if (map.getSource('draw-preview')) {
+        map.getSource('draw-preview').setData({ type: 'FeatureCollection', features: [] });
+      }
+    }
+    if (state.geotagMode) {
+      state.geotagMode = false;
+      state.geotagPhotoId = null;
+      $('#geotagIndicator').classList.remove('active');
+      map.getCanvas().style.cursor = '';
+    }
+    if (state.addStopMode) {
+      state.addStopMode = false;
+      $('#stopIndicator').classList.remove('active');
+      map.getCanvas().style.cursor = '';
+    }
+  }
+});
+
+// ---------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------
+initMap();
+
+})();
+</script>
+</body>
+</html>
