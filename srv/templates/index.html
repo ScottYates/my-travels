@@ -1575,8 +1575,6 @@ function initMap() {
 
   // Crisp tiles: lower = sharper labels/imagery
   viewer.scene.globe.maximumScreenSpaceError = 1.5;
-  // Match device pixel ratio so labels aren't blurry on HiDPI/Retina
-  viewer.resolutionScale = window.devicePixelRatio || 1.0;
   // Disable FXAA post-processing (it blurs text/labels)
   viewer.scene.postProcessStages.fxaa.enabled = false;
 
