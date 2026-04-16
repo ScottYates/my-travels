@@ -1745,21 +1745,7 @@ function addGlobeLabels(viewer) {
     var font = (p.city ? 'bold ' : '600 ') + Math.round(16 * p.s) + 'px sans-serif';
     var ddc = new Cesium.DistanceDisplayCondition(0, p.r);
     var pos = Cesium.Cartesian3.fromDegrees(p.lng, p.lat);
-    // Shadow label (black, offset 1px down-right) for contrast
-    ds.entities.add({
-      position: pos,
-      label: {
-        text: p.n,
-        font: font,
-        fillColor: new Cesium.Color(0, 0, 0, 0.7),
-        style: Cesium.LabelStyle.FILL,
-        verticalOrigin: Cesium.VerticalOrigin.CENTER,
-        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-        pixelOffset: new Cesium.Cartesian2(1, 1),
-        distanceDisplayCondition: ddc
-      }
-    });
-    // Main label (white or colored)
+    // Label (white or colored, no outline/shadow)
     ds.entities.add({
       position: pos,
       label: {
