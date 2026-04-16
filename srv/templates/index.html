@@ -338,6 +338,20 @@ textarea.form-input {
 
 .section-header:first-child { margin-top: 0; }
 
+.section-toggle {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform 0.2s ease;
+}
+
+.section-header.collapsed .section-toggle {
+  transform: rotate(-90deg);
+}
+
+.section-header.collapsed + div {
+  display: none;
+}
+
 .section-header h3 {
   font-size: 14px;
   font-weight: 700;
@@ -1977,10 +1991,11 @@ function renderTripDetail() {
   html += '</div>';
 
   // ---- STOPS ----
-  html += '<div class="section-header">';
-  html += '<h3>📌 Stops (' + stops.length + ')</h3>';
-  html += '<button class="btn btn-orange btn-sm edit-only" id="addStopBtn">+ Add Stop</button>';
+  html += '<div class="section-header" id="stopsHeader" style="cursor:pointer">';
+  html += '<h3><span class="section-toggle" id="stopsToggle">▼</span> 📌 Stops (' + stops.length + ')</h3>';
+  html += '<button class="btn btn-orange btn-sm edit-only" id="addStopBtn" onclick="event.stopPropagation()">+ Add Stop</button>';
   html += '</div>';
+  html += '<div id="stopsBody">';
 
   if (stops.length === 0) {
     html += '<p style="font-size:13px;color:var(--text-dim);margin-bottom:8px">No stops yet. Click the map to add one!</p>';
@@ -2001,6 +2016,7 @@ function renderTripDetail() {
       html += '</div>';
     });
   }
+  html += '</div>';
 
   // ---- ROUTES ----
   html += '<div class="section-header">';
@@ -2080,6 +2096,15 @@ function wireDetailEvents() {
       } catch (err) {
         toast(err.message, 'error');
       }
+    });
+  }
+
+  // Collapsible stops section
+  const stopsHeader = $('#stopsHeader');
+  if (stopsHeader) {
+    stopsHeader.addEventListener('click', (e) => {
+      if (e.target.closest('#addStopBtn')) return;
+      stopsHeader.classList.toggle('collapsed');
     });
   }
 
