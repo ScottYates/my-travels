@@ -431,6 +431,7 @@ textarea.form-input {
 }
 
 .photo-thumb:hover { border-color: var(--accent); transform: scale(1.02); }
+.photo-thumb.focused { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.5); transform: scale(1.02); }
 
 .photo-thumb img {
   width: 100%;
@@ -1247,6 +1248,7 @@ const state = {
   geotagPhotoId: null,
   addStopMode: false,
   selectedPhotoId: null,
+  focusedPhotoId: null,
   mapMarkers: [],
   photoMarkers: [],
 };
@@ -1487,6 +1489,17 @@ function onCesiumClick(screenPos) {
     }
   } else {
     closeGlobePopup();
+    // Clear sidebar photo focus when clicking empty globe space
+    if (state.focusedPhotoId) {
+      state.focusedPhotoId = null;
+      $$('.photo-thumb').forEach(t => t.classList.remove('focused'));
+      // Reset marker sizes
+      state.photoMarkers.forEach(m => {
+        if (m.billboard) { m.billboard.width = 44; m.billboard.height = 44; }
+        if (m.point) { m.point.pixelSize = 14; }
+      });
+      viewer.scene.requestRender();
+    }
   }
 }
 
@@ -1955,9 +1968,38 @@ function wireDetailEvents() {
   }
 
   // Photo clicks
+  // Photo clicks: first click → fly to location on map, second click → open modal
   $$('.photo-thumb').forEach(thumb => {
     thumb.addEventListener('click', () => {
-      openPhotoModal(thumb.dataset.photoId);
+      const photoId = thumb.dataset.photoId;
+      const photo = (trip.photos || []).find(p => p.id === photoId);
+      if (!photo) return;
+
+      if (state.focusedPhotoId === photoId) {
+        // Second click on same photo → open modal
+        openPhotoModal(photoId);
+        return;
+      }
+
+      // First click → highlight and fly to location
+      state.focusedPhotoId = photoId;
+      $$('.photo-thumb').forEach(t => t.classList.remove('focused'));
+      thumb.classList.add('focused');
+
+      if (photo.lat != null && photo.lng != null) {
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat, 4000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-50), roll: 0 },
+          duration: 1.5,
+          complete: function() { viewer.scene.requestRender(); }
+        });
+
+        // Pulse the corresponding map marker
+        highlightPhotoMarker(photoId);
+      } else {
+        // No location — just open the modal directly
+        openPhotoModal(photoId);
+      }
     });
   });
 }
@@ -2191,12 +2233,14 @@ function openPhotoModal(photoId) {
 $('#photoModalClose').addEventListener('click', () => {
   $('#photoModal').classList.remove('active');
   state.selectedPhotoId = null;
+  state.focusedPhotoId = null;
 });
 
 $('#photoModal').addEventListener('click', (e) => {
   if (e.target === $('#photoModal')) {
     $('#photoModal').classList.remove('active');
     state.selectedPhotoId = null;
+    state.focusedPhotoId = null;
   }
 });
 
@@ -2461,6 +2505,7 @@ function clearMapData() {
     .forEach(e => viewer.entities.remove(e));
   state.mapMarkers = [];
   state.photoMarkers = [];
+  state.focusedPhotoId = null;
   closeGlobePopup();
 }
 
@@ -2678,6 +2723,32 @@ function fitMapToTrip() {
       viewer.scene.requestRender();
     }
   });
+}
+
+// Highlight a photo marker on the globe (pulse effect)
+function highlightPhotoMarker(photoId) {
+  // Reset all photo markers to normal size
+  state.photoMarkers.forEach(m => {
+    if (m.billboard) {
+      m.billboard.width = 44;
+      m.billboard.height = 44;
+    }
+    if (m.point) {
+      m.point.pixelSize = 14;
+    }
+  });
+  // Find and enlarge the target marker
+  const target = state.photoMarkers.find(m => m._photoData && m._photoData.id === photoId);
+  if (target) {
+    if (target.billboard && target.billboard.image) {
+      target.billboard.width = 64;
+      target.billboard.height = 64;
+    }
+    if (target.point) {
+      target.point.pixelSize = 20;
+    }
+    viewer.scene.requestRender();
+  }
 }
 
 // ---------------------------------------------------------------
