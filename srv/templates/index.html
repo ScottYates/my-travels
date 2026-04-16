@@ -1573,8 +1573,12 @@ function initMap() {
     }
   });
 
-  // Reduce tile detail slightly for smoother transitions
-  viewer.scene.globe.maximumScreenSpaceError = 4;
+  // Crisp tiles: lower = sharper labels/imagery
+  viewer.scene.globe.maximumScreenSpaceError = 1.5;
+  // Match device pixel ratio so labels aren't blurry on HiDPI/Retina
+  viewer.resolutionScale = window.devicePixelRatio || 1.0;
+  // Disable FXAA post-processing (it blurs text/labels)
+  viewer.scene.postProcessStages.fxaa.enabled = false;
 
   // Add ESRI World Imagery (satellite) + labels overlay
   Cesium.ArcGisMapServerImageryProvider.fromUrl(
@@ -1602,7 +1606,7 @@ function initMap() {
 
   // Set initial camera to a nice overview of the globe
   viewer.camera.setView({
-    destination: Cesium.Cartesian3.fromDegrees(10, 30, 20000000),
+    destination: Cesium.Cartesian3.fromDegrees(-98, 38, 20000000),
     orientation: {
       heading: Cesium.Math.toRadians(0),
       pitch: Cesium.Math.toRadians(-90),
