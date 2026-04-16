@@ -566,6 +566,47 @@ textarea.form-input {
   width: 42px;
   text-align: right;
 }
+.upload-item .upload-retry-wrap {
+  flex-shrink: 0;
+  width: 42px;
+  text-align: right;
+}
+.upload-retry-btn {
+  background: var(--orange);
+  border: none;
+  border-radius: 4px;
+  color: white;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 8px;
+  line-height: 1.4;
+  transition: background 0.15s;
+}
+.upload-retry-btn:hover {
+  background: var(--orange-hover, #e08c00);
+}
+.upload-summary {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.upload-summary.done {
+  color: var(--green);
+  border-color: var(--green);
+}
+.upload-summary.has-errors {
+  color: var(--orange);
+  border-color: var(--orange);
+}
 
 /* Timeline view */
 .timeline {
@@ -2170,18 +2211,17 @@ function wireDetailEvents() {
 }
 
 // ---------------------------------------------------------------
-// Upload Worker — runs XHR in a dedicated Web Worker thread
+// Upload system — batched (max 20 concurrent), auto-retry (3x)
 // ---------------------------------------------------------------
-// The worker receives the raw file bytes (ArrayBuffer, transferable)
-// and builds the multipart/form-data body itself, then sends via XHR
-// with upload progress events.
+// Uses XHR in Web Workers for progress tracking. Files are queued
+// and dispatched in batches. Failed uploads auto-retry up to 3
+// times with exponential backoff, then show a manual retry button.
 
 const UPLOAD_WORKER_SRC = [
   'self.onmessage = function(e) {',
   '  var job = e.data;',
   '  var boundary = "----UploadBoundary" + Date.now() + Math.random().toString(36);',
   '',
-  '  // Build multipart body manually from the ArrayBuffer',
   '  var header = "--" + boundary + "\\r\\n"',
   '    + "Content-Disposition: form-data; name=\\"photo\\"; filename=\\"" + job.fileName + "\\"\\r\\n"',
   '    + "Content-Type: " + job.mimeType + "\\r\\n\\r\\n";',
@@ -2199,6 +2239,7 @@ const UPLOAD_WORKER_SRC = [
   '  var xhr = new XMLHttpRequest();',
   '  xhr.open("POST", job.url, true);',
   '  xhr.setRequestHeader("Content-Type", "multipart/form-data; boundary=" + boundary);',
+  '  xhr.timeout = 120000;',
   '',
   '  xhr.upload.onprogress = function(ev) {',
   '    if (ev.lengthComputable) {',
@@ -2220,6 +2261,10 @@ const UPLOAD_WORKER_SRC = [
   '    self.postMessage({ type: "error", id: job.id, message: "Network error" });',
   '  };',
   '',
+  '  xhr.ontimeout = function() {',
+  '    self.postMessage({ type: "error", id: job.id, message: "Upload timed out" });',
+  '  };',
+  '',
   '  xhr.send(body.buffer);',
   '};',
 ].join('\n');
@@ -2227,42 +2272,142 @@ const UPLOAD_WORKER_SRC = [
 const uploadWorkerBlob = new Blob([UPLOAD_WORKER_SRC], { type: 'application/javascript' });
 const uploadWorkerURL = URL.createObjectURL(uploadWorkerBlob);
 
+const MAX_CONCURRENT = 20;
+const MAX_RETRIES = 3;
 let uploadIdCounter = 0;
-const activeUploads = new Map();
 
-function spawnUploadWorker() {
-  const w = new Worker(uploadWorkerURL);
-  w.onmessage = handleWorkerMessage;
-  return w;
+// All known upload jobs, keyed by id
+const uploadJobs = new Map();
+// Queue of job ids waiting to start
+const uploadQueue = [];
+// Currently in-flight job ids
+const inFlightUploads = new Set();
+// Count of total/done/failed for summary
+let uploadBatchTotal = 0;
+let uploadBatchDone = 0;
+let uploadBatchFailed = 0;
+
+function resetUploadCounters() {
+  uploadBatchTotal = 0;
+  uploadBatchDone = 0;
+  uploadBatchFailed = 0;
 }
 
-function handleWorkerMessage(e) {
-  const msg = e.data;
-  const info = activeUploads.get(msg.id);
-  if (!info) return;
-
-  if (msg.type === 'progress') {
-    const pct = Math.round((msg.loaded / msg.total) * 100);
-    updateUploadItemProgress(info, pct);
-  } else if (msg.type === 'done') {
-    updateUploadItemDone(info);
-    activeUploads.delete(msg.id);
-    info.worker.terminate();
-    checkAllUploadsFinished();
-  } else if (msg.type === 'error') {
-    updateUploadItemError(info, msg.message || 'Upload failed');
-    activeUploads.delete(msg.id);
-    info.worker.terminate();
-    checkAllUploadsFinished();
+function dispatchNext() {
+  while (inFlightUploads.size < MAX_CONCURRENT && uploadQueue.length > 0) {
+    const jobId = uploadQueue.shift();
+    const job = uploadJobs.get(jobId);
+    if (!job) continue;
+    startUploadJob(job);
   }
 }
 
+function startUploadJob(job) {
+  inFlightUploads.add(job.id);
+
+  // Reset UI for retry
+  const bar = document.getElementById('bar-' + job.id);
+  const pctEl = document.getElementById('pct-' + job.id);
+  if (bar) { bar.style.width = '0%'; bar.classList.remove('error', 'done'); }
+  // Restore pct element if it was replaced by check/error icon
+  if (pctEl) {
+    pctEl.textContent = '0%';
+  } else {
+    // Was replaced with check/error icon, recreate
+    const rightEl = job.el?.querySelector('.upload-check, .upload-error-icon, .upload-retry-wrap');
+    if (rightEl) {
+      const span = document.createElement('span');
+      span.className = 'upload-pct';
+      span.id = 'pct-' + job.id;
+      span.textContent = '0%';
+      rightEl.replaceWith(span);
+    }
+  }
+  const statusEl = job.el?.querySelector('.upload-status');
+  if (statusEl) {
+    statusEl.textContent = job.retries > 0 ? 'Retrying… (attempt ' + (job.retries + 1) + '/' + (MAX_RETRIES + 1) + ')' : 'Uploading…';
+    statusEl.style.color = '';
+  }
+
+  // Need a fresh copy of the buffer for retry (original was transferred)
+  // We stored the File object so we re-read it
+  const reader = new FileReader();
+  reader.onload = function() {
+    const buffer = reader.result;
+    const worker = new Worker(uploadWorkerURL);
+    job.worker = worker;
+
+    worker.onmessage = function(e) {
+      const msg = e.data;
+      if (msg.type === 'progress') {
+        const pct = Math.round((msg.loaded / msg.total) * 100);
+        updateUploadItemProgress(job, pct);
+      } else if (msg.type === 'done') {
+        updateUploadItemDone(job);
+        inFlightUploads.delete(job.id);
+        worker.terminate();
+        job.worker = null;
+        uploadBatchDone++;
+        updateUploadSummary();
+        dispatchNext();
+        checkAllUploadsFinished();
+      } else if (msg.type === 'error') {
+        inFlightUploads.delete(job.id);
+        worker.terminate();
+        job.worker = null;
+        if (job.retries < MAX_RETRIES) {
+          // Auto-retry with backoff
+          job.retries++;
+          const delay = Math.min(1000 * Math.pow(2, job.retries - 1), 8000);
+          const statusEl2 = job.el?.querySelector('.upload-status');
+          if (statusEl2) {
+            statusEl2.textContent = 'Retry in ' + (delay / 1000) + 's… (' + msg.message + ')';
+            statusEl2.style.color = 'var(--orange)';
+          }
+          setTimeout(() => {
+            uploadQueue.unshift(job.id);
+            dispatchNext();
+          }, delay);
+        } else {
+          // Permanent failure — show retry button
+          updateUploadItemFailed(job, msg.message || 'Upload failed');
+          uploadBatchFailed++;
+          updateUploadSummary();
+          dispatchNext();
+          checkAllUploadsFinished();
+        }
+      }
+    };
+
+    worker.postMessage({
+      id: job.id,
+      url: job.url,
+      fileName: job.fileName,
+      mimeType: job.mimeType,
+      buffer: buffer,
+    }, [buffer]);
+  };
+  reader.onerror = function() {
+    // File read failed
+    inFlightUploads.delete(job.id);
+    updateUploadItemFailed(job, 'Failed to read file');
+    uploadBatchFailed++;
+    updateUploadSummary();
+    dispatchNext();
+    checkAllUploadsFinished();
+  };
+  reader.readAsArrayBuffer(job.file);
+}
+
 function checkAllUploadsFinished() {
-  if (activeUploads.size > 0) return;
+  // Still have in-flight or queued work
+  if (inFlightUploads.size > 0 || uploadQueue.length > 0) return;
+
+  const hasFailed = Array.from(uploadJobs.values()).some(j => j.failed && !j.done);
+
   setTimeout(async () => {
     const trip = state.currentTrip;
     if (trip) {
-      // Auto-cluster photos into stops for the timeline
       try {
         const updated = await api('POST', '/api/trips/' + trip.id + '/auto-stops');
         state.currentTrip = updated;
@@ -2273,20 +2418,27 @@ function checkAllUploadsFinished() {
         const nStops = (updated.stops || []).length;
         if (nStops > 0) {
           toast(nStops + ' stop' + (nStops > 1 ? 's' : '') + ' created from photo locations');
-          // Switch to timeline tab to show the result
           showView('timeline');
         }
       } catch (err) {
-        // Fallback: just reload
         await reloadCurrentTrip();
       }
     } else {
       await reloadCurrentTrip();
     }
-    setTimeout(() => {
-      const q = $('#uploadQueue');
-      if (q) q.innerHTML = '';
-    }, 4000);
+    // Keep queue visible if there are failures (user can retry)
+    if (!hasFailed) {
+      setTimeout(() => {
+        const q = $('#uploadQueue');
+        if (q) q.innerHTML = '';
+        const s = $('#uploadSummary');
+        if (s) s.remove();
+        uploadJobs.clear();
+        resetUploadCounters();
+      }, 4000);
+    } else {
+      updateUploadSummary();
+    }
   }, 300);
 }
 
@@ -2301,7 +2453,7 @@ function createUploadItem(id, fileName, thumbURL) {
     '<img class="upload-thumb" src="' + (thumbURL || '') + '" alt="">' +
     '<div class="upload-info">' +
       '<div class="upload-name">' + escapeHtml(fileName) + '</div>' +
-      '<div class="upload-status">Preparing…</div>' +
+      '<div class="upload-status">Queued</div>' +
       '<div class="upload-bar-bg"><div class="upload-bar" id="bar-' + id + '"></div></div>' +
     '</div>' +
     '<span class="upload-pct" id="pct-' + id + '">0%</span>';
@@ -2318,10 +2470,13 @@ function updateUploadItemProgress(info, pct) {
   if (pctEl) pctEl.textContent = pct + '%';
   if (statusEl) {
     statusEl.textContent = 'Uploading… ' + formatBytes(pct * info.fileSize / 100) + ' / ' + formatBytes(info.fileSize);
+    statusEl.style.color = '';
   }
 }
 
 function updateUploadItemDone(info) {
+  info.done = true;
+  info.failed = false;
   const bar = document.getElementById('bar-' + info.id);
   const pctEl = document.getElementById('pct-' + info.id);
   const statusEl = info.el?.querySelector('.upload-status');
@@ -2333,17 +2488,98 @@ function updateUploadItemDone(info) {
   }
 }
 
-function updateUploadItemError(info, message) {
+function updateUploadItemFailed(info, message) {
+  info.failed = true;
   const bar = document.getElementById('bar-' + info.id);
   const pctEl = document.getElementById('pct-' + info.id);
   const statusEl = info.el?.querySelector('.upload-status');
   if (bar) { bar.style.width = '100%'; bar.classList.add('error'); }
-  if (pctEl) pctEl.outerHTML = '<span class="upload-error-icon">❌</span>';
+  // Replace pct/check area with retry button
+  const rightEl = pctEl || info.el?.querySelector('.upload-check, .upload-error-icon, .upload-retry-wrap');
+  if (rightEl) {
+    const wrap = document.createElement('span');
+    wrap.className = 'upload-retry-wrap';
+    wrap.innerHTML = '<button class="upload-retry-btn" title="Retry upload">🔄</button>';
+    wrap.querySelector('button').addEventListener('click', (e) => {
+      e.stopPropagation();
+      retryUpload(info.id);
+    });
+    rightEl.replaceWith(wrap);
+  }
   if (statusEl) {
-    statusEl.textContent = message;
+    statusEl.textContent = 'Failed: ' + message;
     statusEl.style.color = 'var(--red)';
   }
-  toast('Failed: ' + info.name, 'error');
+  toast('Failed: ' + info.fileName, 'error');
+}
+
+function retryUpload(jobId) {
+  const job = uploadJobs.get(jobId);
+  if (!job) return;
+  job.failed = false;
+  job.retries = 0;
+  uploadBatchFailed = Math.max(0, uploadBatchFailed - 1);
+  uploadQueue.push(jobId);
+  updateUploadSummary();
+  dispatchNext();
+}
+
+function updateUploadSummary() {
+  let summary = $('#uploadSummary');
+  if (!summary) {
+    const container = $('#uploadQueue');
+    if (!container) return;
+    summary = document.createElement('div');
+    summary.id = 'uploadSummary';
+    summary.className = 'upload-summary';
+    container.parentElement.insertBefore(summary, container);
+  }
+  const inFlight = inFlightUploads.size;
+  const queued = uploadQueue.length;
+  const total = uploadBatchTotal;
+  const done = uploadBatchDone;
+  const failed = uploadBatchFailed;
+  const pending = total - done - failed;
+
+  if (done === total && failed === 0) {
+    summary.textContent = '✅ All ' + total + ' photos uploaded';
+    summary.className = 'upload-summary done';
+    return;
+  }
+
+  let text = '📤 ' + done + '/' + total + ' uploaded';
+  if (inFlight > 0) text += ' · ' + inFlight + ' in progress';
+  if (queued > 0) text += ' · ' + queued + ' queued';
+  if (failed > 0) text += ' · ' + failed + ' failed';
+  summary.textContent = text;
+  summary.className = 'upload-summary' + (failed > 0 ? ' has-errors' : '');
+
+  // Add "Retry All" button if there are failures and nothing in flight
+  let retryAllBtn = summary.querySelector('.retry-all-btn');
+  if (failed > 0 && inFlight === 0 && queued === 0) {
+    if (!retryAllBtn) {
+      retryAllBtn = document.createElement('button');
+      retryAllBtn.className = 'btn btn-sm btn-orange retry-all-btn';
+      retryAllBtn.textContent = '🔄 Retry All Failed';
+      retryAllBtn.style.marginLeft = '8px';
+      retryAllBtn.addEventListener('click', retryAllFailed);
+      summary.appendChild(retryAllBtn);
+    }
+  } else if (retryAllBtn) {
+    retryAllBtn.remove();
+  }
+}
+
+function retryAllFailed() {
+  const failedJobs = Array.from(uploadJobs.values()).filter(j => j.failed && !j.done);
+  failedJobs.forEach(j => {
+    j.failed = false;
+    j.retries = 0;
+    uploadQueue.push(j.id);
+  });
+  uploadBatchFailed = 0;
+  updateUploadSummary();
+  dispatchNext();
 }
 
 function formatBytes(bytes) {
@@ -2362,43 +2598,31 @@ function uploadPhotos(files) {
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const id = ++uploadIdCounter;
-
-    // Create thumbnail preview from file
     const thumbURL = URL.createObjectURL(file);
     const el = createUploadItem(id, file.name, thumbURL);
 
-    // Read file as ArrayBuffer, then transfer to worker
-    const reader = new FileReader();
-    reader.onload = function() {
-      const buffer = reader.result;
-      const worker = spawnUploadWorker();
-
-      activeUploads.set(id, {
-        id: id,
-        name: file.name,
-        el: el,
-        fileSize: file.size,
-        worker: worker,
-      });
-
-      // Update status to show uploading
-      const statusEl = el?.querySelector('.upload-status');
-      if (statusEl) statusEl.textContent = 'Uploading…';
-
-      // Transfer the ArrayBuffer to the worker (zero-copy)
-      worker.postMessage({
-        id: id,
-        url: url,
-        fileName: file.name,
-        mimeType: file.type || 'image/jpeg',
-        buffer: buffer,
-      }, [buffer]);
+    const job = {
+      id: id,
+      url: url,
+      file: file,
+      fileName: file.name,
+      mimeType: file.type || 'image/jpeg',
+      fileSize: file.size,
+      el: el,
+      retries: 0,
+      done: false,
+      failed: false,
+      worker: null,
     };
-    reader.readAsArrayBuffer(file);
+    uploadJobs.set(id, job);
+    uploadQueue.push(id);
+    uploadBatchTotal++;
   }
 
   if (files.length > 0) {
     toast(files.length + ' photo(s) queued for upload');
+    updateUploadSummary();
+    dispatchNext();
   }
 }
 
