@@ -1548,6 +1548,220 @@ function escapeHtml(s) {
 let viewer; window._map = null;
 let popupEl = null; // current open popup
 
+// ---------------------------------------------------------------
+// Globe labels – native Cesium Labels for pixel-perfect text
+// ---------------------------------------------------------------
+function addGlobeLabels(viewer) {
+  var places = [
+    // Continents
+    {n:'NORTH AMERICA',lat:45,lng:-100,s:1.2,r:18000000},
+    {n:'SOUTH AMERICA',lat:-15,lng:-60,s:1.2,r:18000000},
+    {n:'EUROPE',lat:50,lng:15,s:1.2,r:18000000},
+    {n:'AFRICA',lat:5,lng:20,s:1.2,r:18000000},
+    {n:'ASIA',lat:45,lng:90,s:1.2,r:18000000},
+    {n:'AUSTRALIA',lat:-25,lng:135,s:1.1,r:18000000},
+    {n:'ANTARCTICA',lat:-82,lng:0,s:1.0,r:18000000},
+    // Oceans
+    {n:'Pacific Ocean',lat:0,lng:-150,s:0.9,r:18000000,c:[0.6,0.85,1,0.7]},
+    {n:'Atlantic Ocean',lat:10,lng:-35,s:0.9,r:18000000,c:[0.6,0.85,1,0.7]},
+    {n:'Indian Ocean',lat:-20,lng:75,s:0.9,r:18000000,c:[0.6,0.85,1,0.7]},
+    {n:'Arctic Ocean',lat:85,lng:0,s:0.7,r:18000000,c:[0.6,0.85,1,0.7]},
+    // Countries
+    {n:'UNITED STATES',lat:39,lng:-98,s:0.7,r:8000000},
+    {n:'CANADA',lat:56,lng:-96,s:0.7,r:8000000},
+    {n:'MEXICO',lat:23.5,lng:-102,s:0.6,r:8000000},
+    {n:'BRAZIL',lat:-10,lng:-52,s:0.7,r:8000000},
+    {n:'ARGENTINA',lat:-35,lng:-65,s:0.6,r:8000000},
+    {n:'COLOMBIA',lat:4,lng:-73,s:0.5,r:8000000},
+    {n:'PERU',lat:-10,lng:-76,s:0.5,r:8000000},
+    {n:'CHILE',lat:-33,lng:-71,s:0.5,r:8000000},
+    {n:'RUSSIA',lat:60,lng:100,s:0.7,r:8000000},
+    {n:'CHINA',lat:35,lng:103,s:0.7,r:8000000},
+    {n:'INDIA',lat:22,lng:80,s:0.6,r:8000000},
+    {n:'JAPAN',lat:36,lng:138,s:0.5,r:8000000},
+    {n:'AUSTRALIA',lat:-25,lng:135,s:0.6,r:8000000},
+    {n:'UNITED KINGDOM',lat:54,lng:-2,s:0.4,r:5000000},
+    {n:'FRANCE',lat:46.5,lng:2.5,s:0.5,r:5000000},
+    {n:'GERMANY',lat:51,lng:10,s:0.5,r:5000000},
+    {n:'SPAIN',lat:40,lng:-4,s:0.5,r:5000000},
+    {n:'ITALY',lat:42.5,lng:12.5,s:0.5,r:5000000},
+    {n:'TURKEY',lat:39,lng:35,s:0.5,r:5000000},
+    {n:'EGYPT',lat:26,lng:30,s:0.5,r:5000000},
+    {n:'SOUTH AFRICA',lat:-30,lng:25,s:0.5,r:8000000},
+    {n:'NIGERIA',lat:9,lng:8,s:0.5,r:8000000},
+    {n:'KENYA',lat:0,lng:38,s:0.5,r:8000000},
+    {n:'INDONESIA',lat:-2,lng:118,s:0.5,r:8000000},
+    {n:'THAILAND',lat:15,lng:101,s:0.5,r:8000000},
+    {n:'SOUTH KOREA',lat:36,lng:128,s:0.4,r:5000000},
+    {n:'SAUDI ARABIA',lat:24,lng:45,s:0.5,r:8000000},
+    {n:'IRAN',lat:33,lng:53,s:0.5,r:8000000},
+    {n:'IRAQ',lat:33,lng:44,s:0.4,r:5000000},
+    {n:'PAKISTAN',lat:30,lng:69,s:0.5,r:8000000},
+    {n:'GUATEMALA',lat:15.5,lng:-90.3,s:0.35,r:5000000},
+    {n:'CUBA',lat:22,lng:-79.5,s:0.4,r:5000000},
+    {n:'VENEZUELA',lat:7,lng:-66,s:0.5,r:8000000},
+    {n:'PANAMA',lat:9,lng:-79.5,s:0.35,r:5000000},
+    {n:'ECUADOR',lat:-1.5,lng:-78,s:0.4,r:5000000},
+    {n:'BOLIVIA',lat:-17,lng:-65,s:0.5,r:8000000},
+    {n:'PARAGUAY',lat:-23,lng:-58,s:0.4,r:5000000},
+    {n:'URUGUAY',lat:-33,lng:-56,s:0.4,r:5000000},
+    {n:'MOROCCO',lat:32,lng:-6,s:0.5,r:8000000},
+    {n:'ALGERIA',lat:28,lng:2,s:0.5,r:8000000},
+    {n:'LIBYA',lat:27,lng:17,s:0.5,r:8000000},
+    {n:'ETHIOPIA',lat:9,lng:39,s:0.5,r:8000000},
+    {n:'TANZANIA',lat:-6,lng:35,s:0.5,r:8000000},
+    {n:'POLAND',lat:52,lng:20,s:0.4,r:5000000},
+    {n:'UKRAINE',lat:49,lng:32,s:0.5,r:5000000},
+    {n:'SWEDEN',lat:62,lng:16,s:0.4,r:5000000},
+    {n:'NORWAY',lat:64,lng:12,s:0.4,r:5000000},
+    {n:'FINLAND',lat:64,lng:26,s:0.4,r:5000000},
+    {n:'PORTUGAL',lat:39.5,lng:-8,s:0.4,r:5000000},
+    {n:'GREECE',lat:39,lng:22,s:0.4,r:5000000},
+    {n:'MONGOLIA',lat:47,lng:104,s:0.5,r:8000000},
+    {n:'KAZAKHSTAN',lat:48,lng:68,s:0.5,r:8000000},
+    {n:'NEW ZEALAND',lat:-42,lng:174,s:0.4,r:8000000},
+    {n:'PHILIPPINES',lat:12,lng:122,s:0.4,r:8000000},
+    {n:'VIETNAM',lat:16,lng:107,s:0.4,r:8000000},
+    {n:'MYANMAR',lat:20,lng:97,s:0.4,r:5000000},
+    {n:'BANGLADESH',lat:24,lng:90,s:0.35,r:5000000},
+    {n:'NEPAL',lat:28,lng:84,s:0.35,r:5000000},
+    {n:'AFGHANISTAN',lat:34,lng:66,s:0.4,r:5000000},
+    // US States
+    {n:'Alabama',lat:32.8,lng:-86.8,s:0.35,r:3000000},
+    {n:'Alaska',lat:64,lng:-153,s:0.35,r:3000000},
+    {n:'Arizona',lat:34.3,lng:-111.7,s:0.35,r:3000000},
+    {n:'Arkansas',lat:34.8,lng:-92.2,s:0.35,r:3000000},
+    {n:'California',lat:37,lng:-120,s:0.35,r:3000000},
+    {n:'Colorado',lat:39,lng:-105.5,s:0.35,r:3000000},
+    {n:'Connecticut',lat:41.6,lng:-72.7,s:0.25,r:1500000},
+    {n:'Delaware',lat:39,lng:-75.5,s:0.25,r:1500000},
+    {n:'Florida',lat:28.5,lng:-82,s:0.35,r:3000000},
+    {n:'Georgia',lat:32.7,lng:-83.5,s:0.35,r:3000000},
+    {n:'Hawaii',lat:20.5,lng:-157,s:0.3,r:2000000},
+    {n:'Idaho',lat:44.4,lng:-114.7,s:0.35,r:3000000},
+    {n:'Illinois',lat:40,lng:-89.2,s:0.35,r:3000000},
+    {n:'Indiana',lat:39.8,lng:-86.3,s:0.35,r:3000000},
+    {n:'Iowa',lat:42,lng:-93.5,s:0.35,r:3000000},
+    {n:'Kansas',lat:38.5,lng:-98.3,s:0.35,r:3000000},
+    {n:'Kentucky',lat:37.8,lng:-85.7,s:0.35,r:3000000},
+    {n:'Louisiana',lat:31,lng:-92,s:0.35,r:3000000},
+    {n:'Maine',lat:45.3,lng:-69.2,s:0.35,r:3000000},
+    {n:'Maryland',lat:39.1,lng:-76.8,s:0.25,r:1500000},
+    {n:'Massachusetts',lat:42.3,lng:-71.8,s:0.25,r:1500000},
+    {n:'Michigan',lat:44.3,lng:-85.4,s:0.35,r:3000000},
+    {n:'Minnesota',lat:46.3,lng:-94.3,s:0.35,r:3000000},
+    {n:'Mississippi',lat:32.7,lng:-89.7,s:0.35,r:3000000},
+    {n:'Missouri',lat:38.5,lng:-92.5,s:0.35,r:3000000},
+    {n:'Montana',lat:47,lng:-109.6,s:0.35,r:3000000},
+    {n:'Nebraska',lat:41.5,lng:-99.8,s:0.35,r:3000000},
+    {n:'Nevada',lat:39.5,lng:-116.9,s:0.35,r:3000000},
+    {n:'New Hampshire',lat:43.7,lng:-71.6,s:0.25,r:1500000},
+    {n:'New Jersey',lat:40.2,lng:-74.7,s:0.25,r:1500000},
+    {n:'New Mexico',lat:34.5,lng:-106,s:0.35,r:3000000},
+    {n:'New York',lat:43,lng:-75.5,s:0.35,r:3000000},
+    {n:'North Carolina',lat:35.5,lng:-80,s:0.35,r:3000000},
+    {n:'North Dakota',lat:47.5,lng:-100.5,s:0.35,r:3000000},
+    {n:'Ohio',lat:40.5,lng:-82.7,s:0.35,r:3000000},
+    {n:'Oklahoma',lat:35.5,lng:-97.5,s:0.35,r:3000000},
+    {n:'Oregon',lat:44,lng:-120.5,s:0.35,r:3000000},
+    {n:'Pennsylvania',lat:41,lng:-77.6,s:0.35,r:3000000},
+    {n:'Rhode Island',lat:41.7,lng:-71.5,s:0.2,r:800000},
+    {n:'South Carolina',lat:33.8,lng:-81,s:0.35,r:3000000},
+    {n:'South Dakota',lat:44.4,lng:-100.2,s:0.35,r:3000000},
+    {n:'Tennessee',lat:35.8,lng:-86.4,s:0.35,r:3000000},
+    {n:'Texas',lat:31.5,lng:-99.5,s:0.4,r:3000000},
+    {n:'Utah',lat:39.5,lng:-111.7,s:0.35,r:3000000},
+    {n:'Vermont',lat:44,lng:-72.7,s:0.25,r:1500000},
+    {n:'Virginia',lat:37.5,lng:-79,s:0.35,r:3000000},
+    {n:'Washington',lat:47.4,lng:-120.5,s:0.35,r:3000000},
+    {n:'West Virginia',lat:38.6,lng:-80.6,s:0.3,r:2000000},
+    {n:'Wisconsin',lat:44.6,lng:-89.7,s:0.35,r:3000000},
+    {n:'Wyoming',lat:43,lng:-107.5,s:0.35,r:3000000},
+    // Major world cities
+    {n:'New York',lat:40.71,lng:-74.01,s:0.3,r:1500000,city:true},
+    {n:'Los Angeles',lat:34.05,lng:-118.24,s:0.3,r:1500000,city:true},
+    {n:'Chicago',lat:41.88,lng:-87.63,s:0.3,r:1500000,city:true},
+    {n:'Houston',lat:29.76,lng:-95.37,s:0.3,r:1500000,city:true},
+    {n:'Phoenix',lat:33.45,lng:-112.07,s:0.3,r:1500000,city:true},
+    {n:'Philadelphia',lat:39.95,lng:-75.17,s:0.3,r:1500000,city:true},
+    {n:'San Antonio',lat:29.42,lng:-98.49,s:0.3,r:1500000,city:true},
+    {n:'San Diego',lat:32.72,lng:-117.16,s:0.3,r:1500000,city:true},
+    {n:'Dallas',lat:32.78,lng:-96.8,s:0.3,r:1500000,city:true},
+    {n:'San Francisco',lat:37.77,lng:-122.42,s:0.28,r:1500000,city:true},
+    {n:'Seattle',lat:47.61,lng:-122.33,s:0.28,r:1500000,city:true},
+    {n:'Denver',lat:39.74,lng:-104.99,s:0.28,r:1500000,city:true},
+    {n:'Boston',lat:42.36,lng:-71.06,s:0.28,r:1500000,city:true},
+    {n:'Atlanta',lat:33.75,lng:-84.39,s:0.28,r:1500000,city:true},
+    {n:'Miami',lat:25.76,lng:-80.19,s:0.28,r:1500000,city:true},
+    {n:'Minneapolis',lat:44.98,lng:-93.27,s:0.28,r:1500000,city:true},
+    {n:'Detroit',lat:42.33,lng:-83.05,s:0.28,r:1500000,city:true},
+    {n:'Portland',lat:45.52,lng:-122.68,s:0.28,r:1500000,city:true},
+    {n:'Las Vegas',lat:36.17,lng:-115.14,s:0.28,r:1500000,city:true},
+    {n:'St. Louis',lat:38.63,lng:-90.2,s:0.28,r:1500000,city:true},
+    {n:'Des Moines',lat:41.59,lng:-93.62,s:0.25,r:1000000,city:true},
+    {n:'Omaha',lat:41.26,lng:-95.94,s:0.25,r:1000000,city:true},
+    {n:'London',lat:51.51,lng:-0.13,s:0.3,r:2000000,city:true},
+    {n:'Paris',lat:48.86,lng:2.35,s:0.3,r:2000000,city:true},
+    {n:'Berlin',lat:52.52,lng:13.41,s:0.3,r:2000000,city:true},
+    {n:'Moscow',lat:55.76,lng:37.62,s:0.3,r:2000000,city:true},
+    {n:'Tokyo',lat:35.68,lng:139.69,s:0.3,r:2000000,city:true},
+    {n:'Beijing',lat:39.91,lng:116.39,s:0.3,r:2000000,city:true},
+    {n:'Shanghai',lat:31.23,lng:121.47,s:0.3,r:2000000,city:true},
+    {n:'Delhi',lat:28.61,lng:77.21,s:0.3,r:2000000,city:true},
+    {n:'Mumbai',lat:19.08,lng:72.88,s:0.3,r:2000000,city:true},
+    {n:'Sydney',lat:-33.87,lng:151.21,s:0.3,r:2000000,city:true},
+    {n:'Melbourne',lat:-37.81,lng:144.96,s:0.28,r:2000000,city:true},
+    {n:'São Paulo',lat:-23.55,lng:-46.63,s:0.3,r:2000000,city:true},
+    {n:'Rio de Janeiro',lat:-22.91,lng:-43.17,s:0.28,r:2000000,city:true},
+    {n:'Buenos Aires',lat:-34.6,lng:-58.38,s:0.28,r:2000000,city:true},
+    {n:'Cairo',lat:30.04,lng:31.24,s:0.3,r:2000000,city:true},
+    {n:'Lagos',lat:6.45,lng:3.4,s:0.28,r:2000000,city:true},
+    {n:'Nairobi',lat:-1.29,lng:36.82,s:0.28,r:2000000,city:true},
+    {n:'Dubai',lat:25.2,lng:55.27,s:0.28,r:2000000,city:true},
+    {n:'Singapore',lat:1.35,lng:103.82,s:0.28,r:2000000,city:true},
+    {n:'Hong Kong',lat:22.32,lng:114.17,s:0.28,r:2000000,city:true},
+    {n:'Seoul',lat:37.57,lng:126.98,s:0.28,r:2000000,city:true},
+    {n:'Bangkok',lat:13.76,lng:100.5,s:0.28,r:2000000,city:true},
+    {n:'Istanbul',lat:41.01,lng:28.98,s:0.28,r:2000000,city:true},
+    {n:'Rome',lat:41.9,lng:12.5,s:0.28,r:2000000,city:true},
+    {n:'Madrid',lat:40.42,lng:-3.7,s:0.28,r:2000000,city:true},
+    {n:'Toronto',lat:43.65,lng:-79.38,s:0.28,r:2000000,city:true},
+    {n:'Vancouver',lat:49.28,lng:-123.12,s:0.28,r:2000000,city:true},
+    {n:'Mexico City',lat:19.43,lng:-99.13,s:0.3,r:2000000,city:true},
+    {n:'Lima',lat:-12.05,lng:-77.04,s:0.28,r:2000000,city:true},
+    {n:'Bogotá',lat:4.71,lng:-74.07,s:0.28,r:2000000,city:true},
+    {n:'Santiago',lat:-33.45,lng:-70.67,s:0.28,r:2000000,city:true},
+    {n:'Jakarta',lat:-6.21,lng:106.85,s:0.28,r:2000000,city:true},
+    {n:'Manila',lat:14.6,lng:120.98,s:0.28,r:2000000,city:true},
+  ];
+
+  var ds = new Cesium.CustomDataSource('globe-labels');
+  viewer.dataSources.add(ds);
+
+  places.forEach(function(p) {
+    var color = p.c
+      ? new Cesium.Color(p.c[0], p.c[1], p.c[2], p.c[3])
+      : Cesium.Color.WHITE;
+    ds.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(p.lng, p.lat),
+      label: {
+        text: p.n,
+        font: (p.city ? 'bold ' : '600 ') + Math.round(16 * p.s) + 'px sans-serif',
+        fillColor: color,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+        pixelOffset: new Cesium.Cartesian2(0, 0),
+        distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, p.r),
+        scaleByDistance: new Cesium.NearFarScalar(1000, 2.0, p.r, 1.0),
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND
+      }
+    });
+  });
+}
+
 function initMap() {
   // Disable Cesium Ion completely (we use free tile providers)
   Cesium.Ion.defaultAccessToken = '';
@@ -1603,19 +1817,8 @@ function initMap() {
         }
       }
     }).catch(function() {});
-    // Labels: dark_only_labels has white text with dark halo (black outline)
-    var labels = viewer.imageryLayers.addImageryProvider(
-      new Cesium.UrlTemplateImageryProvider({
-        url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}@2x.png',
-        subdomains: ['a', 'b', 'c', 'd'],
-        minimumLevel: 1,
-        maximumLevel: 18,
-        credit: 'Labels © OpenStreetMap contributors © CARTO'
-      })
-    );
-    labels.brightness = 1.8;
-    labels.contrast = 1.5;
-    labels.alpha = 1.0;
+    // Native Cesium labels – pixel-perfect at every zoom
+    addGlobeLabels(viewer);
   }).catch(function() {
     viewer.imageryLayers.addImageryProvider(
       new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
