@@ -489,6 +489,83 @@ textarea.form-input {
 .drop-zone p { font-size: 13px; color: var(--text-muted); }
 .drop-zone .drop-hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
+/* Upload progress UI */
+.upload-queue {
+  margin-bottom: 16px;
+}
+.upload-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--card-bg);
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+.upload-item .upload-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.upload-item .upload-info {
+  flex: 1;
+  min-width: 0;
+}
+.upload-item .upload-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-weight: 500;
+}
+.upload-item .upload-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+.upload-item .upload-bar-bg {
+  height: 4px;
+  background: var(--navy-lighter);
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+.upload-item .upload-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  width: 0%;
+  transition: width 0.15s ease;
+}
+.upload-item .upload-bar.done { background: var(--green); }
+.upload-item .upload-bar.error { background: var(--red); }
+.upload-item .upload-pct {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+  width: 42px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.upload-item .upload-check {
+  color: var(--green);
+  font-size: 16px;
+  flex-shrink: 0;
+  width: 42px;
+  text-align: right;
+}
+.upload-item .upload-error-icon {
+  color: var(--red);
+  font-size: 16px;
+  flex-shrink: 0;
+  width: 42px;
+  text-align: right;
+}
+
 /* Timeline view */
 .timeline {
   position: relative;
@@ -1292,17 +1369,6 @@ function initMap() {
     });
     map.setTerrain({ source: 'terrainSource', exaggeration: 1.5 });
 
-    // Add sky for 3D atmosphere
-    map.addLayer({
-      id: 'sky',
-      type: 'sky',
-      paint: {
-        'sky-type': 'atmosphere',
-        'sky-atmosphere-sun': [0, 0],
-        'sky-atmosphere-sun-intensity': 15,
-      },
-    });
-
     // If in share mode, load that trip
     if (state.shareID) {
       loadSharedTrip(state.shareID);
@@ -1624,6 +1690,7 @@ function renderTripDetail() {
   html += '<p class="drop-hint">JPG, PNG up to 32MB</p>';
   html += '<input type="file" id="photoFileInput" accept="image/*" multiple style="display:none">';
   html += '</div>';
+  html += '<div class="upload-queue edit-only" id="uploadQueue"></div>';
 
   if (photos.length > 0) {
     html += '<div class="photo-grid">';
@@ -1771,23 +1838,214 @@ function wireDetailEvents() {
 }
 
 // ---------------------------------------------------------------
-// Photo upload
+// Upload Worker — runs XHR in a dedicated Web Worker thread
 // ---------------------------------------------------------------
-async function uploadPhotos(files) {
+// The worker receives the raw file bytes (ArrayBuffer, transferable)
+// and builds the multipart/form-data body itself, then sends via XHR
+// with upload progress events.
+
+const UPLOAD_WORKER_SRC = [
+  'self.onmessage = function(e) {',
+  '  var job = e.data;',
+  '  var boundary = "----UploadBoundary" + Date.now() + Math.random().toString(36);',
+  '',
+  '  // Build multipart body manually from the ArrayBuffer',
+  '  var header = "--" + boundary + "\\r\\n"',
+  '    + "Content-Disposition: form-data; name=\\"photo\\"; filename=\\"" + job.fileName + "\\"\\r\\n"',
+  '    + "Content-Type: " + job.mimeType + "\\r\\n\\r\\n";',
+  '  var footer = "\\r\\n--" + boundary + "--\\r\\n";',
+  '',
+  '  var headerBytes = new TextEncoder().encode(header);',
+  '  var footerBytes = new TextEncoder().encode(footer);',
+  '  var fileBytes = new Uint8Array(job.buffer);',
+  '',
+  '  var body = new Uint8Array(headerBytes.length + fileBytes.length + footerBytes.length);',
+  '  body.set(headerBytes, 0);',
+  '  body.set(fileBytes, headerBytes.length);',
+  '  body.set(footerBytes, headerBytes.length + fileBytes.length);',
+  '',
+  '  var xhr = new XMLHttpRequest();',
+  '  xhr.open("POST", job.url, true);',
+  '  xhr.setRequestHeader("Content-Type", "multipart/form-data; boundary=" + boundary);',
+  '',
+  '  xhr.upload.onprogress = function(ev) {',
+  '    if (ev.lengthComputable) {',
+  '      self.postMessage({ type: "progress", id: job.id, loaded: ev.loaded, total: ev.total });',
+  '    }',
+  '  };',
+  '',
+  '  xhr.onload = function() {',
+  '    if (xhr.status >= 200 && xhr.status < 300) {',
+  '      var result = null;',
+  '      try { result = JSON.parse(xhr.responseText); } catch(e) {}',
+  '      self.postMessage({ type: "done", id: job.id, result: result });',
+  '    } else {',
+  '      self.postMessage({ type: "error", id: job.id, message: xhr.statusText || "HTTP " + xhr.status });',
+  '    }',
+  '  };',
+  '',
+  '  xhr.onerror = function() {',
+  '    self.postMessage({ type: "error", id: job.id, message: "Network error" });',
+  '  };',
+  '',
+  '  xhr.send(body.buffer);',
+  '};',
+].join('\n');
+
+const uploadWorkerBlob = new Blob([UPLOAD_WORKER_SRC], { type: 'application/javascript' });
+const uploadWorkerURL = URL.createObjectURL(uploadWorkerBlob);
+
+let uploadIdCounter = 0;
+const activeUploads = new Map();
+
+function spawnUploadWorker() {
+  const w = new Worker(uploadWorkerURL);
+  w.onmessage = handleWorkerMessage;
+  return w;
+}
+
+function handleWorkerMessage(e) {
+  const msg = e.data;
+  const info = activeUploads.get(msg.id);
+  if (!info) return;
+
+  if (msg.type === 'progress') {
+    const pct = Math.round((msg.loaded / msg.total) * 100);
+    updateUploadItemProgress(info, pct);
+  } else if (msg.type === 'done') {
+    updateUploadItemDone(info);
+    activeUploads.delete(msg.id);
+    info.worker.terminate();
+    checkAllUploadsFinished();
+  } else if (msg.type === 'error') {
+    updateUploadItemError(info, msg.message || 'Upload failed');
+    activeUploads.delete(msg.id);
+    info.worker.terminate();
+    checkAllUploadsFinished();
+  }
+}
+
+function checkAllUploadsFinished() {
+  if (activeUploads.size > 0) return;
+  setTimeout(() => {
+    reloadCurrentTrip();
+    setTimeout(() => {
+      const q = $('#uploadQueue');
+      if (q) q.innerHTML = '';
+    }, 4000);
+  }, 300);
+}
+
+function createUploadItem(id, fileName, thumbURL) {
+  const container = $('#uploadQueue');
+  if (!container) return null;
+
+  const el = document.createElement('div');
+  el.className = 'upload-item';
+  el.id = 'upload-' + id;
+  el.innerHTML =
+    '<img class="upload-thumb" src="' + (thumbURL || '') + '" alt="">' +
+    '<div class="upload-info">' +
+      '<div class="upload-name">' + escapeHtml(fileName) + '</div>' +
+      '<div class="upload-status">Preparing…</div>' +
+      '<div class="upload-bar-bg"><div class="upload-bar" id="bar-' + id + '"></div></div>' +
+    '</div>' +
+    '<span class="upload-pct" id="pct-' + id + '">0%</span>';
+
+  container.appendChild(el);
+  return el;
+}
+
+function updateUploadItemProgress(info, pct) {
+  const bar = document.getElementById('bar-' + info.id);
+  const pctEl = document.getElementById('pct-' + info.id);
+  const statusEl = info.el?.querySelector('.upload-status');
+  if (bar) bar.style.width = pct + '%';
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (statusEl) {
+    statusEl.textContent = 'Uploading… ' + formatBytes(pct * info.fileSize / 100) + ' / ' + formatBytes(info.fileSize);
+  }
+}
+
+function updateUploadItemDone(info) {
+  const bar = document.getElementById('bar-' + info.id);
+  const pctEl = document.getElementById('pct-' + info.id);
+  const statusEl = info.el?.querySelector('.upload-status');
+  if (bar) { bar.style.width = '100%'; bar.classList.add('done'); }
+  if (pctEl) pctEl.outerHTML = '<span class="upload-check">✅</span>';
+  if (statusEl) {
+    statusEl.textContent = 'Complete — EXIF location extracted';
+    statusEl.style.color = 'var(--green)';
+  }
+}
+
+function updateUploadItemError(info, message) {
+  const bar = document.getElementById('bar-' + info.id);
+  const pctEl = document.getElementById('pct-' + info.id);
+  const statusEl = info.el?.querySelector('.upload-status');
+  if (bar) { bar.style.width = '100%'; bar.classList.add('error'); }
+  if (pctEl) pctEl.outerHTML = '<span class="upload-error-icon">❌</span>';
+  if (statusEl) {
+    statusEl.textContent = message;
+    statusEl.style.color = 'var(--red)';
+  }
+  toast('Failed: ' + info.name, 'error');
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+window.uploadPhotos = uploadPhotos;
+function uploadPhotos(files) {
   const trip = state.currentTrip;
   if (!trip) return;
 
+  const url = window.location.origin + '/api/trips/' + trip.id + '/photos';
+
   for (let i = 0; i < files.length; i++) {
-    const fd = new FormData();
-    fd.append('photo', files[i]);
-    try {
-      await api('POST', '/api/trips/' + trip.id + '/photos', fd);
-    } catch (err) {
-      toast('Failed to upload ' + files[i].name, 'error');
-    }
+    const file = files[i];
+    const id = ++uploadIdCounter;
+
+    // Create thumbnail preview from file
+    const thumbURL = URL.createObjectURL(file);
+    const el = createUploadItem(id, file.name, thumbURL);
+
+    // Read file as ArrayBuffer, then transfer to worker
+    const reader = new FileReader();
+    reader.onload = function() {
+      const buffer = reader.result;
+      const worker = spawnUploadWorker();
+
+      activeUploads.set(id, {
+        id: id,
+        name: file.name,
+        el: el,
+        fileSize: file.size,
+        worker: worker,
+      });
+
+      // Update status to show uploading
+      const statusEl = el?.querySelector('.upload-status');
+      if (statusEl) statusEl.textContent = 'Uploading…';
+
+      // Transfer the ArrayBuffer to the worker (zero-copy)
+      worker.postMessage({
+        id: id,
+        url: url,
+        fileName: file.name,
+        mimeType: file.type || 'image/jpeg',
+        buffer: buffer,
+      }, [buffer]);
+    };
+    reader.readAsArrayBuffer(file);
   }
-  toast(files.length + ' photo(s) uploaded!');
-  reloadCurrentTrip();
+
+  if (files.length > 0) {
+    toast(files.length + ' photo(s) queued for upload');
+  }
 }
 
 // ---------------------------------------------------------------

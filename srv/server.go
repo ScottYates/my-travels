@@ -1,11 +1,16 @@
 package srv
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"html/template"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"log/slog"
 	"net/http"
@@ -17,6 +22,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rwcarlsen/goexif/exif"
 	"srv.exe.dev/db"
 	"srv.exe.dev/db/dbgen"
 )
@@ -498,6 +504,38 @@ func (s *Server) handleDeleteStop(w http.ResponseWriter, r *http.Request) {
 // Photos
 // ---------------------------------------------------------------------------
 
+// extractEXIF reads EXIF GPS coordinates and timestamp from image data.
+func extractEXIF(data []byte) (lat, lng *float64, takenAt *time.Time) {
+	x, err := exif.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, nil
+	}
+
+	// GPS
+	la, lo, err := x.LatLong()
+	if err == nil {
+		lat = &la
+		lng = &lo
+	}
+
+	// DateTime
+	dt, err := x.DateTime()
+	if err == nil {
+		takenAt = &dt
+	}
+
+	return lat, lng, takenAt
+}
+
+// imageDimensions decodes just the image config to get width/height.
+func imageDimensions(data []byte) (int, int) {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
+}
+
 func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	tripID := r.PathValue("id")
 
@@ -526,6 +564,13 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	// Read entire file into memory for EXIF + dimension parsing
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		jsonError(w, "failed to read photo", http.StatusInternalServerError)
+		return
+	}
+
 	// Generate filename preserving extension
 	ext := strings.ToLower(filepath.Ext(header.Filename))
 	if ext == "" {
@@ -535,21 +580,18 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 
 	// Save to upload dir
 	dstPath := filepath.Join(s.UploadDir, filename)
-	dst, err := os.Create(dstPath)
-	if err != nil {
+	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil {
 		jsonError(w, "failed to save photo", http.StatusInternalServerError)
 		return
 	}
-	defer dst.Close()
 
-	written, err := io.Copy(dst, file)
-	if err != nil {
-		os.Remove(dstPath)
-		jsonError(w, "failed to write photo", http.StatusInternalServerError)
-		return
-	}
+	// Extract EXIF GPS + timestamp
+	exifLat, exifLng, exifTime := extractEXIF(fileData)
 
-	// Read optional form fields
+	// Extract image dimensions
+	imgW, imgH := imageDimensions(fileData)
+
+	// Form fields override EXIF if provided
 	var lat, lng *float64
 	if v := r.FormValue("lat"); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
@@ -561,11 +603,24 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 			lng = &f
 		}
 	}
+	// Fall back to EXIF
+	if lat == nil {
+		lat = exifLat
+	}
+	if lng == nil {
+		lng = exifLng
+	}
+
 	caption := r.FormValue("caption")
 
 	var stopID *string
 	if v := r.FormValue("stop_id"); v != "" {
 		stopID = &v
+	}
+
+	var takenAt *time.Time
+	if exifTime != nil {
+		takenAt = exifTime
 	}
 
 	id := uuid.New().String()
@@ -580,10 +635,10 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		Caption:      caption,
 		Lat:          lat,
 		Lng:          lng,
-		TakenAt:      nil,
-		Width:        0,
-		Height:       0,
-		SizeBytes:    written,
+		TakenAt:      takenAt,
+		Width:        int64(imgW),
+		Height:       int64(imgH),
+		SizeBytes:    int64(len(fileData)),
 		CreatedAt:    now,
 	}); err != nil {
 		os.Remove(dstPath)
