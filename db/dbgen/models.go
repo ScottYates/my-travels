@@ -43,16 +43,17 @@ type Route struct {
 }
 
 type Stop struct {
-	ID          string     `json:"id"`
-	TripID      string     `json:"trip_id"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	Lat         float64    `json:"lat"`
-	Lng         float64    `json:"lng"`
-	Elevation   float64    `json:"elevation"`
-	StopOrder   int64      `json:"stop_order"`
-	ArrivedAt   *time.Time `json:"arrived_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID           string     `json:"id"`
+	TripID       string     `json:"trip_id"`
+	Title        string     `json:"title"`
+	Description  string     `json:"description"`
+	Lat          float64    `json:"lat"`
+	Lng          float64    `json:"lng"`
+	Elevation    float64    `json:"elevation"`
+	StopOrder    int64      `json:"stop_order"`
+	ArrivedAt    *time.Time `json:"arrived_at"`
+	CreatedAt    time.Time  `json:"created_at"`
+	LocationName string     `json:"location_name"`
 }
 
 type Trip struct {

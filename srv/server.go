@@ -439,17 +439,20 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 	id := uuid.New().String()
 	now := time.Now()
 
+	locName := reverseGeocode(body.Lat, body.Lng)
+
 	if err := q.CreateStop(r.Context(), dbgen.CreateStopParams{
-		ID:          id,
-		TripID:      tripID,
-		Title:       body.Title,
-		Description: body.Description,
-		Lat:         body.Lat,
-		Lng:         body.Lng,
-		Elevation:   body.Elevation,
-		StopOrder:   nextOrder,
-		ArrivedAt:   body.ArrivedAt,
-		CreatedAt:   now,
+		ID:           id,
+		TripID:       tripID,
+		Title:        body.Title,
+		Description:  body.Description,
+		Lat:          body.Lat,
+		Lng:          body.Lng,
+		Elevation:    body.Elevation,
+		StopOrder:    nextOrder,
+		ArrivedAt:    body.ArrivedAt,
+		CreatedAt:    now,
+		LocationName: locName,
 	}); err != nil {
 		jsonError(w, "failed to create stop", http.StatusInternalServerError)
 		return
@@ -467,13 +470,14 @@ func (s *Server) handleUpdateStop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	var body struct {
-		Title       string     `json:"title"`
-		Description string     `json:"description"`
-		Lat         float64    `json:"lat"`
-		Lng         float64    `json:"lng"`
-		Elevation   float64    `json:"elevation"`
-		StopOrder   int64      `json:"stop_order"`
-		ArrivedAt   *time.Time `json:"arrived_at"`
+		Title        string     `json:"title"`
+		Description  string     `json:"description"`
+		Lat          float64    `json:"lat"`
+		Lng          float64    `json:"lng"`
+		Elevation    float64    `json:"elevation"`
+		StopOrder    int64      `json:"stop_order"`
+		ArrivedAt    *time.Time `json:"arrived_at"`
+		LocationName *string    `json:"location_name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid JSON body", http.StatusBadRequest)
@@ -491,15 +495,23 @@ func (s *Server) handleUpdateStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Use provided location_name, or preserve existing
+	existing, _ := q.GetStop(r.Context(), id)
+	locName := existing.LocationName
+	if body.LocationName != nil {
+		locName = *body.LocationName
+	}
+
 	if err := q.UpdateStop(r.Context(), dbgen.UpdateStopParams{
-		Title:       body.Title,
-		Description: body.Description,
-		Lat:         body.Lat,
-		Lng:         body.Lng,
-		Elevation:   body.Elevation,
-		StopOrder:   body.StopOrder,
-		ArrivedAt:   body.ArrivedAt,
-		ID:          id,
+		Title:        body.Title,
+		Description:  body.Description,
+		Lat:          body.Lat,
+		Lng:          body.Lng,
+		Elevation:    body.Elevation,
+		StopOrder:    body.StopOrder,
+		ArrivedAt:    body.ArrivedAt,
+		LocationName: locName,
+		ID:           id,
 	}); err != nil {
 		jsonError(w, "failed to update stop", http.StatusInternalServerError)
 		return
@@ -973,6 +985,64 @@ func (s *Server) handleResetTrip(w http.ResponseWriter, r *http.Request) {
 const clusterRadiusMiles = 3.0
 const clusterRadiusMeters = clusterRadiusMiles * 1609.344
 
+// reverseGeocode returns a human-readable location name for lat/lng
+// using the OpenStreetMap Nominatim API. Returns empty string on failure.
+func reverseGeocode(lat, lng float64) string {
+	url := fmt.Sprintf(
+		"https://nominatim.openstreetmap.org/reverse?lat=%f&lon=%f&format=json&zoom=10&addressdetails=1",
+		lat, lng,
+	)
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "MyTravels/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Address struct {
+			City        string `json:"city"`
+			Town        string `json:"town"`
+			Village     string `json:"village"`
+			County      string `json:"county"`
+			State       string `json:"state"`
+			Country     string `json:"country"`
+			CountryCode string `json:"country_code"`
+		} `json:"address"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+
+	a := result.Address
+	locality := a.City
+	if locality == "" {
+		locality = a.Town
+	}
+	if locality == "" {
+		locality = a.Village
+	}
+	if locality == "" {
+		locality = a.County
+	}
+
+	if locality != "" && a.Country != "" {
+		return locality + ", " + a.Country
+	}
+	if a.State != "" && a.Country != "" {
+		return a.State + ", " + a.Country
+	}
+	if a.Country != "" {
+		return a.Country
+	}
+	return ""
+}
+
 // haversineMeters returns distance in meters between two lat/lng points.
 func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
 	const R = 6371000.0 // Earth radius in meters
@@ -1094,15 +1164,22 @@ func (s *Server) handleAutoStops(w http.ResponseWriter, r *http.Request) {
 
 		title := fmt.Sprintf("Stop %d", order+1)
 
+		// Reverse geocode (with rate-limit-friendly delay between calls)
+		if order > 0 {
+			time.Sleep(1100 * time.Millisecond)
+		}
+		locName := reverseGeocode(c.centroidLat(), c.centroidLng())
+
 		q.CreateStop(ctx, dbgen.CreateStopParams{
-			ID:        stopID,
-			TripID:    id,
-			Title:     title,
-			Lat:       c.centroidLat(),
-			Lng:       c.centroidLng(),
-			StopOrder: int64(order),
-			ArrivedAt: arrivedAt,
-			CreatedAt: now,
+			ID:           stopID,
+			TripID:       id,
+			Title:        title,
+			Lat:          c.centroidLat(),
+			Lng:          c.centroidLng(),
+			StopOrder:    int64(order),
+			ArrivedAt:    arrivedAt,
+			CreatedAt:    now,
+			LocationName: locName,
 		})
 
 		// Assign photos to this stop

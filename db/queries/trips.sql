@@ -18,8 +18,8 @@ UPDATE trips SET title = ?, description = ?, cover_photo_id = ?, default_cam_hea
 DELETE FROM trips WHERE id = ?;
 
 -- name: CreateStop :exec
-INSERT INTO stops (id, trip_id, title, description, lat, lng, elevation, stop_order, arrived_at, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO stops (id, trip_id, title, description, lat, lng, elevation, stop_order, arrived_at, created_at, location_name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListStops :many
 SELECT * FROM stops WHERE trip_id = ? ORDER BY stop_order ASC;
@@ -28,7 +28,7 @@ SELECT * FROM stops WHERE trip_id = ? ORDER BY stop_order ASC;
 SELECT * FROM stops WHERE id = ?;
 
 -- name: UpdateStop :exec
-UPDATE stops SET title = ?, description = ?, lat = ?, lng = ?, elevation = ?, stop_order = ?, arrived_at = ? WHERE id = ?;
+UPDATE stops SET title = ?, description = ?, lat = ?, lng = ?, elevation = ?, stop_order = ?, arrived_at = ?, location_name = ? WHERE id = ?;
 
 -- name: DeleteStop :exec
 DELETE FROM stops WHERE id = ?;

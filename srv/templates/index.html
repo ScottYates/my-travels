@@ -682,6 +682,12 @@ textarea.form-input {
   margin-bottom: 6px;
 }
 
+.timeline-card .tc-location {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
 .timeline-card .tc-desc {
   font-size: 13px;
   color: var(--text-muted);
@@ -1302,6 +1308,10 @@ body.readonly .edit-only { display: none !important; }
     <div class="form-group">
       <label>Description</label>
       <textarea class="form-input" id="editStopDesc"></textarea>
+    </div>
+    <div class="form-group">
+      <label>Location</label>
+      <input type="text" class="form-input" id="editStopLocation" placeholder="e.g. Beijing, China">
     </div>
     <div class="form-group">
       <label>Arrived At</label>
@@ -2010,7 +2020,11 @@ function renderTripDetail() {
       if (stop.description) html += '<p>' + escapeHtml(stop.description) + '</p>';
       html += '<p style="font-size:11px;color:var(--text-dim);margin-top:2px">';
       html += '📷 ' + stopPhotoCount + ' photo' + (stopPhotoCount !== 1 ? 's' : '');
-      html += ' · ' + stop.lat.toFixed(4) + ', ' + stop.lng.toFixed(4);
+      if (stop.location_name) {
+        html += ' · 📍 ' + escapeHtml(stop.location_name);
+      } else {
+        html += ' · ' + stop.lat.toFixed(4) + ', ' + stop.lng.toFixed(4);
+      }
       html += '</p>';
       if (stop.arrived_at) html += '<p style="color:var(--orange);margin-top:2px">' + formatDate(stop.arrived_at) + '</p>';
       html += '</div>';
@@ -2871,6 +2885,7 @@ function openEditStop(stopId) {
   $('#editStopTitle').textContent = 'Edit Stop';
   $('#editStopName').value = stop.title || '';
   $('#editStopDesc').value = stop.description || '';
+  $('#editStopLocation').value = stop.location_name || '';
   if (stop.arrived_at) {
     const d = new Date(stop.arrived_at);
     // format for datetime-local input
@@ -2889,6 +2904,7 @@ function openEditStop(stopId) {
       await api('PUT', '/api/stops/' + stopId, {
         title: $('#editStopName').value,
         description: $('#editStopDesc').value,
+        location_name: $('#editStopLocation').value,
         lat: stop.lat,
         lng: stop.lng,
         elevation: stop.elevation || 0,
@@ -3506,6 +3522,9 @@ function renderTimeline() {
       html += '<div class="tc-date">' + formatDate(stop.arrived_at) + '</div>';
     }
     html += '<h3>' + escapeHtml(stop.title || 'Untitled Stop') + '</h3>';
+    if (stop.location_name) {
+      html += '<div class="tc-location">📍 ' + escapeHtml(stop.location_name) + '</div>';
+    }
     if (stop.description) {
       html += '<div class="tc-desc">' + escapeHtml(stop.description) + '</div>';
     }
