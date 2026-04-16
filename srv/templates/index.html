@@ -1563,11 +1563,7 @@ function onCesiumClick(screenPos) {
         (entity._stopData.description ? '<br><span style="font-size:12px;color:#94a3b8">' + escapeHtml(entity._stopData.description) + '</span>' : ''));
     } else if (entity._photoData) {
       const p = entity._photoData;
-      showGlobePopup(p.lng, p.lat,
-        '<div class="globe-popup-photo">' +
-        '<img src="/uploads/' + escapeHtml(p.filename) + '" alt="">' +
-        (p.caption ? '<div class="popup-caption">' + escapeHtml(p.caption) + '</div>' : '') +
-        '</div>', true);
+      closeGlobePopup();
 
       // Highlight the corresponding sidebar thumbnail
       state.focusedPhotoId = p.id;
@@ -1976,7 +1972,9 @@ function wireDetailEvents() {
       const sid = el.dataset.stopId;
       const stop = (trip.stops || []).find(s => s.id === sid);
       if (stop) {
-        viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat, 8000), orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: 1.5 });
+        const dest = Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat, 8000);
+        const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
+        viewer.camera.flyTo({ destination: dest, orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: d, easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT });
       }
     });
   });
@@ -2081,29 +2079,10 @@ function wireDetailEvents() {
       thumb.classList.add('focused');
 
       if (photo.lat != null && photo.lng != null) {
-        // Fly to the photo's map entity using saved or default camera offset
-        const target = state.photoMarkers.find(m => m._photoData && m._photoData.id === photoId);
-        const offset = getPhotoFlyOffset(photo);
-        if (target) {
-          viewer.flyTo(target, {
-            duration: 1.5,
-            offset: offset
-          }).then(function() {
-            viewer.scene.requestRender();
-            updateCamToolbar();
-          });
-        } else {
-          // Entity not on map yet — fly to coordinates directly
-          viewer.camera.flyTo({
-            destination: Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat, 3000),
-            orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
-            duration: 1.5,
-            complete: function() {
-              viewer.scene.requestRender();
-              updateCamToolbar();
-            }
-          });
-        }
+        // Fly to the photo with smooth camera interpolation
+        flyToPhoto(photo, function() {
+          updateCamToolbar();
+        });
 
         // Enlarge the corresponding map marker
         highlightPhotoMarker(photoId);
@@ -2834,7 +2813,8 @@ function fitMapToTrip() {
       pitch: Cesium.Math.toRadians(pitch),
       roll: 0,
     },
-    duration: 2.0,
+    duration: 2.5,
+    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
     complete: function() {
       viewer.scene.requestRender();
     }
@@ -3010,12 +2990,61 @@ function getPhotoFlyOffset(photo) {
     r = trip.default_cam_range;
   }
 
-  return new Cesium.HeadingPitchRange(
-    Cesium.Math.toRadians(h),
-    Cesium.Math.toRadians(p),
-    r
-  );
+  return { headingDeg: h, pitchDeg: p, range: r };
 }
+
+// Compute camera destination + orientation from a target lat/lng and HPR offset
+function computeCameraFromHPR(lat, lng, hpr) {
+  const hRad = Cesium.Math.toRadians(hpr.headingDeg);
+  const pRad = Cesium.Math.toRadians(hpr.pitchDeg);
+  const r = hpr.range;
+
+  // Camera position in ENU frame of the target
+  // HeadingPitchRange heading = direction camera LOOKS, so camera IS in opposite direction
+  const cosP = Math.cos(pRad);
+  const sinP = Math.sin(pRad);
+  const east  = -r * cosP * Math.sin(hRad);
+  const north = -r * cosP * Math.cos(hRad);
+  const up    = -r * sinP; // pitch negative = above, so up is positive
+
+  const targetCart = Cesium.Cartesian3.fromDegrees(lng, lat, 15);
+  const enu = Cesium.Transforms.eastNorthUpToFixedFrame(targetCart);
+  const localOffset = new Cesium.Cartesian3(east, north, up);
+  const destination = Cesium.Matrix4.multiplyByPoint(enu, localOffset, new Cesium.Cartesian3());
+
+  return {
+    destination: destination,
+    orientation: {
+      heading: hRad,
+      pitch: pRad,
+      roll: 0,
+    }
+  };
+}
+
+// Fly the camera to a photo with smooth interpolation and adaptive duration
+function flyToPhoto(photo, callback) {
+  const hpr = getPhotoFlyOffset(photo);
+  const cam = computeCameraFromHPR(photo.lat, photo.lng, hpr);
+
+  // Adaptive duration based on distance from current camera position
+  const currentPos = viewer.camera.positionWC;
+  const dist = Cesium.Cartesian3.distance(currentPos, cam.destination);
+  // Short hops (< 5km) are quick; cross-globe flights take longer
+  const duration = Math.max(0.8, Math.min(3.0, dist / 5000));
+
+  viewer.camera.flyTo({
+    destination: cam.destination,
+    orientation: cam.orientation,
+    duration: duration,
+    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+    complete: function() {
+      viewer.scene.requestRender();
+      if (callback) callback();
+    }
+  });
+}
+
 
 // ---------------------------------------------------------------
 // Timeline View
@@ -3072,10 +3101,13 @@ function renderTimeline() {
       const lat = parseFloat(card.dataset.lat);
       const lng = parseFloat(card.dataset.lng);
       if (!isNaN(lat) && !isNaN(lng)) {
+        const dest = Cesium.Cartesian3.fromDegrees(lng, lat, 8000);
+        const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
         viewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(lng, lat, 8000),
+          destination: dest,
           orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
-          duration: 1.5,
+          duration: d,
+          easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
         });
       }
     });
