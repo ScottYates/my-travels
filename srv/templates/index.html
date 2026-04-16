@@ -1742,7 +1742,7 @@ function addGlobeLabels(viewer) {
     var color = p.c
       ? new Cesium.Color(p.c[0], p.c[1], p.c[2], p.c[3])
       : Cesium.Color.WHITE;
-    var font = (p.city ? 'bold ' : '600 ') + Math.round(16 * p.s) + 'px sans-serif';
+    var font = (p.city ? 'bold ' : '600 ') + Math.round(20 * p.s) + 'px sans-serif';
     var ddc = new Cesium.DistanceDisplayCondition(0, p.r);
     var pos = Cesium.Cartesian3.fromDegrees(p.lng, p.lat);
     // Label (white or colored, no outline/shadow)
@@ -1752,7 +1752,9 @@ function addGlobeLabels(viewer) {
         text: p.n,
         font: font,
         fillColor: color,
-        style: Cesium.LabelStyle.FILL,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 1,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         pixelOffset: new Cesium.Cartesian2(0, 0),
