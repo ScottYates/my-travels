@@ -4,8 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>My Travels</title>
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
 <style>
 :root {
   --sidebar-w: 420px;
@@ -670,39 +670,47 @@ textarea.form-input {
   font-family: monospace;
 }
 
-/* Photo popup on map */
-.maplibregl-popup-content {
-  background: var(--navy) !important;
-  border-radius: var(--radius) !important;
-  padding: 0 !important;
-  box-shadow: var(--shadow) !important;
-  max-width: 280px !important;
+/* Cesium overrides */
+#map .cesium-viewer-bottom,
+#map .cesium-viewer-animationContainer,
+#map .cesium-viewer-timelineContainer,
+#map .cesium-viewer-fullscreenContainer,
+#map .cesium-viewer-toolbar,
+#map .cesium-credit-logoContainer,
+#map .cesium-credit-textContainer { display: none !important; }
+#map .cesium-viewer { overflow: hidden; }
+#map .cesium-widget canvas { border-radius: 0; }
+
+/* Custom popup on globe */
+.globe-popup {
+  position: absolute;
+  z-index: 50;
+  background: var(--navy);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  min-width: 160px;
+  max-width: 280px;
+  pointer-events: auto;
+  animation: popIn 0.2s ease;
+}
+@keyframes popIn { from { opacity:0; transform:scale(0.9); } to { opacity:1; transform:scale(1); } }
+.globe-popup-close {
+  position: absolute; top: 6px; right: 8px;
+  background: none; border: none; color: white;
+  font-size: 18px; cursor: pointer; z-index: 2;
+}
+.globe-popup-content { padding: 12px; color: var(--text); font-size: 13px; }
+.globe-popup-content strong { font-size: 14px; }
+.globe-popup-photo img {
+  width: 100%; max-height: 200px; object-fit: cover;
+  border-radius: var(--radius) var(--radius) 0 0; display: block;
+}
+.globe-popup-photo .popup-caption {
+  padding: 10px 14px; font-size: 13px; color: var(--text);
 }
 
-.maplibregl-popup-tip {
-  border-top-color: var(--navy) !important;
-}
 
-.maplibregl-popup-close-button {
-  color: white !important;
-  font-size: 18px !important;
-  right: 8px !important;
-  top: 4px !important;
-}
-
-.map-popup-photo img {
-  width: 100%;
-  max-height: 200px;
-  object-fit: cover;
-  border-radius: var(--radius) var(--radius) 0 0;
-  display: block;
-}
-
-.map-popup-photo .popup-caption {
-  padding: 10px 14px;
-  font-size: 13px;
-  color: var(--text);
-}
 
 /* Map toolbar */
 .map-toolbar {
@@ -1338,74 +1346,186 @@ function escapeHtml(s) {
 }
 
 // ---------------------------------------------------------------
-// Map setup
+// Map setup (CesiumJS 3D Globe)
 // ---------------------------------------------------------------
-let map; window._map = null;
+let viewer; window._map = null;
+let popupEl = null; // current open popup
 
 function initMap() {
-  map = new maplibregl.Map({
-    container: 'map',
-    style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
-    center: [10, 45],
-    zoom: 3,
-    pitch: 50,
-    bearing: -10,
-    maxPitch: 85,
-    antialias: true,
-  });
+  // Disable Cesium Ion completely (we use free tile providers)
+  Cesium.Ion.defaultAccessToken = '';
 
-  window._map = map;
-  map.addControl(new maplibregl.NavigationControl(), 'top-right');
-  map.addControl(new maplibregl.ScaleControl(), 'bottom-right');
-
-  map.on('load', () => {
-    // Add 3D terrain
-    map.addSource('terrainSource', {
-      type: 'raster-dem',
-      tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
-      encoding: 'terrarium',
-      tileSize: 256,
-      maxzoom: 15,
-    });
-    map.setTerrain({ source: 'terrainSource', exaggeration: 1.5 });
-
-    // If in share mode, load that trip
-    if (state.shareID) {
-      loadSharedTrip(state.shareID);
-    } else {
-      loadTrips();
+  viewer = new Cesium.Viewer('map', {
+    baseLayer: false,
+    baseLayerPicker: false,
+    geocoder: false,
+    homeButton: false,
+    sceneModePicker: false,
+    navigationHelpButton: false,
+    animation: false,
+    timeline: false,
+    fullscreenButton: false,
+    vrButton: false,
+    selectionIndicator: false,
+    infoBox: false,
+    skyAtmosphere: new Cesium.SkyAtmosphere(),
+    contextOptions: {
+      webgl: { alpha: false }
     }
   });
 
-  // Map click handler for drawing / geotagging / adding stops
-  map.on('click', onMapClick);
-  map.on('dblclick', onMapDoubleClick);
+  // Add ESRI World Imagery (satellite) + labels overlay
+  Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+  ).then(function(provider) {
+    viewer.imageryLayers.addImageryProvider(provider);
+    // Add labels on top
+    return Cesium.ArcGisMapServerImageryProvider.fromUrl(
+      'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer'
+    );
+  }).then(function(labelsProvider) {
+    viewer.imageryLayers.addImageryProvider(labelsProvider);
+  }).catch(function() {
+    // Fallback to OpenStreetMap if ESRI fails
+    viewer.imageryLayers.addImageryProvider(
+      new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
+    );
+  });
+
+  // Enable nice globe rendering
+  viewer.scene.globe.enableLighting = false;
+  viewer.scene.globe.depthTestAgainstTerrain = false;
+
+  window._map = viewer;
+
+  // Set initial camera to a nice overview of the globe
+  viewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(10, 30, 20000000),
+    orientation: {
+      heading: Cesium.Math.toRadians(0),
+      pitch: Cesium.Math.toRadians(-90),
+      roll: 0,
+    }
+  });
+
+  // Wait for terrain + imagery to be ready
+  viewer.scene.globe.tileLoadProgressEvent.addEventListener(function onReady(remaining) {
+    if (remaining === 0) {
+      viewer.scene.globe.tileLoadProgressEvent.removeEventListener(onReady);
+    }
+  });
+
+  // Click handler
+  const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+  handler.setInputAction(function(click) {
+    onCesiumClick(click.position);
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+  handler.setInputAction(function(click) {
+    onCesiumDoubleClick(click.position);
+  }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+  // Load data
+  if (state.shareID) {
+    loadSharedTrip(state.shareID);
+  } else {
+    loadTrips();
+  }
 }
 
-function onMapClick(e) {
-  const lngLat = e.lngLat;
+function screenToCartographic(screenPos) {
+  const ray = viewer.camera.getPickRay(screenPos);
+  if (!ray) return null;
+  const cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+  if (!cartesian) return null;
+  const carto = Cesium.Cartographic.fromCartesian(cartesian);
+  return {
+    lat: Cesium.Math.toDegrees(carto.latitude),
+    lng: Cesium.Math.toDegrees(carto.longitude),
+  };
+}
+
+function onCesiumClick(screenPos) {
+  const pos = screenToCartographic(screenPos);
+  if (!pos) return;
 
   if (state.drawMode) {
-    state.drawPoints.push([lngLat.lng, lngLat.lat]);
+    state.drawPoints.push([pos.lng, pos.lat]);
     updateDrawPreview();
     return;
   }
 
   if (state.geotagMode && state.geotagPhotoId) {
-    setPhotoLocation(state.geotagPhotoId, lngLat.lat, lngLat.lng);
+    setPhotoLocation(state.geotagPhotoId, pos.lat, pos.lng);
     return;
   }
 
   if (state.addStopMode) {
-    addStopAtLocation(lngLat.lat, lngLat.lng);
+    addStopAtLocation(pos.lat, pos.lng);
     return;
+  }
+
+  // Check if we clicked an entity (stop/photo)
+  const picked = viewer.scene.pick(screenPos);
+  if (Cesium.defined(picked) && picked.id) {
+    const entity = picked.id;
+    if (entity._stopData) {
+      showGlobePopup(entity._stopData.lng, entity._stopData.lat,
+        '<strong>' + escapeHtml(entity._stopData.title) + '</strong>' +
+        (entity._stopData.description ? '<br><span style="font-size:12px;color:#94a3b8">' + escapeHtml(entity._stopData.description) + '</span>' : ''));
+    } else if (entity._photoData) {
+      const p = entity._photoData;
+      showGlobePopup(p.lng, p.lat,
+        '<div class="globe-popup-photo">' +
+        '<img src="/uploads/' + escapeHtml(p.filename) + '" alt="">' +
+        (p.caption ? '<div class="popup-caption">' + escapeHtml(p.caption) + '</div>' : '') +
+        '</div>', true);
+    }
+  } else {
+    closeGlobePopup();
   }
 }
 
-function onMapDoubleClick(e) {
+function onCesiumDoubleClick(screenPos) {
   if (state.drawMode && state.drawPoints.length >= 2) {
-    e.preventDefault();
     finishDrawing();
+  }
+}
+
+function showGlobePopup(lng, lat, html, isPhoto) {
+  closeGlobePopup();
+  const div = document.createElement('div');
+  div.className = 'globe-popup';
+  div.innerHTML = '<button class="globe-popup-close">&times;</button>' +
+    (isPhoto ? html : '<div class="globe-popup-content">' + html + '</div>');
+  div.querySelector('.globe-popup-close').onclick = closeGlobePopup;
+  div.style.display = 'none';
+  document.getElementById('map').appendChild(div);
+  popupEl = { el: div, lng, lat };
+
+  // Position it immediately
+  updatePopupPosition();
+  div.style.display = 'block';
+
+  // Keep it positioned as camera moves
+  viewer.scene.preRender.addEventListener(updatePopupPosition);
+}
+
+function updatePopupPosition() {
+  if (!popupEl) return;
+  const cartesian = Cesium.Cartesian3.fromDegrees(popupEl.lng, popupEl.lat, 50);
+  const screen = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, cartesian);
+  if (!screen) { popupEl.el.style.display = 'none'; return; }
+  popupEl.el.style.display = 'block';
+  const mapRect = document.getElementById('map').getBoundingClientRect();
+  popupEl.el.style.left = (screen.x - mapRect.left - popupEl.el.offsetWidth / 2) + 'px';
+  popupEl.el.style.top = (screen.y - mapRect.top - popupEl.el.offsetHeight - 20) + 'px';
+}
+
+function closeGlobePopup() {
+  if (popupEl) {
+    viewer.scene.preRender.removeEventListener(updatePopupPosition);
+    popupEl.el.remove();
+    popupEl = null;
   }
 }
 
@@ -1726,7 +1846,7 @@ function wireDetailEvents() {
     addStopBtn.addEventListener('click', () => {
       state.addStopMode = true;
       $('#stopIndicator').classList.add('active');
-      map.getCanvas().style.cursor = 'crosshair';
+      viewer.canvas.style.cursor = 'crosshair';
     });
   }
 
@@ -1734,7 +1854,7 @@ function wireDetailEvents() {
   $('#cancelStop').addEventListener('click', () => {
     state.addStopMode = false;
     $('#stopIndicator').classList.remove('active');
-    map.getCanvas().style.cursor = '';
+    viewer.canvas.style.cursor = '';
   });
 
   // Stop items — click to fly
@@ -1744,7 +1864,7 @@ function wireDetailEvents() {
       const sid = el.dataset.stopId;
       const stop = (trip.stops || []).find(s => s.id === sid);
       if (stop) {
-        map.flyTo({ center: [stop.lng, stop.lat], zoom: 14, pitch: 50 });
+        viewer.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat, 8000), orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: 1.5 });
       }
     });
   });
@@ -2099,14 +2219,14 @@ $('#photoModalGeotag').addEventListener('click', () => {
   state.geotagPhotoId = state.selectedPhotoId;
   $('#photoModal').classList.remove('active');
   $('#geotagIndicator').classList.add('active');
-  map.getCanvas().style.cursor = 'crosshair';
+  viewer.canvas.style.cursor = 'crosshair';
 });
 
 $('#cancelGeotag').addEventListener('click', () => {
   state.geotagMode = false;
   state.geotagPhotoId = null;
   $('#geotagIndicator').classList.remove('active');
-  map.getCanvas().style.cursor = '';
+  viewer.canvas.style.cursor = '';
 });
 
 $('#photoModalDelete').addEventListener('click', async () => {
@@ -2137,7 +2257,7 @@ async function setPhotoLocation(photoId, lat, lng) {
     state.geotagMode = false;
     state.geotagPhotoId = null;
     $('#geotagIndicator').classList.remove('active');
-    map.getCanvas().style.cursor = '';
+    viewer.canvas.style.cursor = '';
     reloadCurrentTrip();
   } catch (err) {
     toast(err.message, 'error');
@@ -2152,7 +2272,7 @@ async function addStopAtLocation(lat, lng) {
   if (!trip) return;
   state.addStopMode = false;
   $('#stopIndicator').classList.remove('active');
-  map.getCanvas().style.cursor = '';
+  viewer.canvas.style.cursor = '';
 
   const title = await customPrompt('Stop name:', '');
   if (title === null) return;
@@ -2234,74 +2354,57 @@ function startDrawing() {
   state.drawMode = true;
   state.drawPoints = [];
   $('#drawIndicator').classList.add('active');
-  map.getCanvas().style.cursor = 'crosshair';
-
-  // Add empty source for preview
-  if (!map.getSource('draw-preview')) {
-    map.addSource('draw-preview', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] },
-    });
-    map.addLayer({
-      id: 'draw-preview-line',
-      type: 'line',
-      source: 'draw-preview',
-      paint: {
-        'line-color': '#3b82f6',
-        'line-width': 3,
-        'line-dasharray': [2, 2],
-      },
-    });
-    map.addLayer({
-      id: 'draw-preview-points',
-      type: 'circle',
-      source: 'draw-preview',
-      filter: ['==', '$type', 'Point'],
-      paint: {
-        'circle-radius': 5,
-        'circle-color': '#3b82f6',
-        'circle-stroke-color': '#fff',
-        'circle-stroke-width': 2,
-      },
-    });
-  }
+  viewer.canvas.style.cursor = 'crosshair';
 }
 
 function updateDrawPreview() {
-  if (!map.getSource('draw-preview')) return;
-  const features = [];
+  // Remove old draw preview entities
+  viewer.entities.values
+    .filter(e => e._isDrawPreview)
+    .forEach(e => viewer.entities.remove(e));
 
+  // Draw line
   if (state.drawPoints.length >= 2) {
-    features.push({
-      type: 'Feature',
-      properties: {},
-      geometry: { type: 'LineString', coordinates: state.drawPoints },
+    const positions = state.drawPoints.map(p => Cesium.Cartesian3.fromDegrees(p[0], p[1]));
+    const lineEntity = viewer.entities.add({
+      polyline: {
+        positions: positions,
+        width: 3,
+        material: new Cesium.PolylineDashMaterialProperty({
+          color: Cesium.Color.fromCssColorString('#3b82f6'),
+          dashLength: 16,
+        }),
+        clampToGround: true,
+      }
     });
+    lineEntity._isDrawPreview = true;
   }
 
+  // Draw points
   state.drawPoints.forEach(pt => {
-    features.push({
-      type: 'Feature',
-      properties: {},
-      geometry: { type: 'Point', coordinates: pt },
+    const ptEntity = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(pt[0], pt[1]),
+      point: {
+        pixelSize: 8,
+        color: Cesium.Color.fromCssColorString('#3b82f6'),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+      }
     });
-  });
-
-  map.getSource('draw-preview').setData({
-    type: 'FeatureCollection',
-    features: features,
+    ptEntity._isDrawPreview = true;
   });
 }
 
 async function finishDrawing() {
   state.drawMode = false;
   $('#drawIndicator').classList.remove('active');
-  map.getCanvas().style.cursor = '';
+  viewer.canvas.style.cursor = '';
 
-  // Clear preview
-  if (map.getSource('draw-preview')) {
-    map.getSource('draw-preview').setData({ type: 'FeatureCollection', features: [] });
-  }
+  // Clear draw preview
+  viewer.entities.values
+    .filter(e => e._isDrawPreview)
+    .forEach(e => viewer.entities.remove(e));
 
   if (state.drawPoints.length < 2) {
     toast('Need at least 2 points', 'error');
@@ -2337,40 +2440,23 @@ $('#cancelDraw').addEventListener('click', () => {
   state.drawMode = false;
   state.drawPoints = [];
   $('#drawIndicator').classList.remove('active');
-  map.getCanvas().style.cursor = '';
-  if (map.getSource('draw-preview')) {
-    map.getSource('draw-preview').setData({ type: 'FeatureCollection', features: [] });
-  }
+  viewer.canvas.style.cursor = '';
+  viewer.entities.values
+    .filter(e => e._isDrawPreview)
+    .forEach(e => viewer.entities.remove(e));
 });
 
 // ---------------------------------------------------------------
-// Map data rendering
+// Map data rendering (Cesium entities)
 // ---------------------------------------------------------------
 function clearMapData() {
-  // Remove stop markers
-  state.mapMarkers.forEach(m => m.remove());
+  // Remove all trip-related entities (but not draw preview)
+  viewer.entities.values
+    .filter(e => e._isTripData)
+    .forEach(e => viewer.entities.remove(e));
   state.mapMarkers = [];
-
-  // Remove photo markers
-  state.photoMarkers.forEach(m => m.remove());
   state.photoMarkers = [];
-
-  // Remove route layers/sources
-  const style = map.getStyle();
-  if (style && style.layers) {
-    style.layers.forEach(layer => {
-      if (layer.id.startsWith('route-')) {
-        map.removeLayer(layer.id);
-      }
-    });
-  }
-  if (style && style.sources) {
-    Object.keys(style.sources).forEach(src => {
-      if (src.startsWith('route-')) {
-        map.removeSource(src);
-      }
-    });
-  }
+  closeGlobePopup();
 }
 
 function renderMapData() {
@@ -2382,179 +2468,136 @@ function renderMapData() {
   const photos = trip.photos || [];
   const routes = trip.routes || [];
 
-  // Render routes
-  routes.forEach((route, idx) => {
+  // Render routes as polylines
+  routes.forEach(route => {
     let geojson;
     try {
       geojson = typeof route.geojson === 'string' ? JSON.parse(route.geojson) : route.geojson;
-    } catch (e) {
-      return;
-    }
+    } catch (e) { return; }
 
-    const srcId = 'route-' + route.id;
-    const layerId = 'route-line-' + route.id;
-
-    if (!map.getSource(srcId)) {
-      map.addSource(srcId, { type: 'geojson', data: geojson });
-    }
-    if (!map.getLayer(layerId)) {
-      map.addLayer({
-        id: layerId,
-        type: 'line',
-        source: srcId,
-        paint: {
-          'line-color': route.color || '#3388ff',
-          'line-width': 4,
-          'line-opacity': 0.8,
-        },
-        layout: {
-          'line-cap': 'round',
-          'line-join': 'round',
-        },
+    const color = Cesium.Color.fromCssColorString(route.color || '#3388ff').withAlpha(0.85);
+    if (geojson.features) {
+      geojson.features.forEach(f => {
+        if (f.geometry && f.geometry.type === 'LineString') {
+          const positions = f.geometry.coordinates.map(c => Cesium.Cartesian3.fromDegrees(c[0], c[1]));
+          const e = viewer.entities.add({
+            polyline: {
+              positions: positions,
+              width: 5,
+              material: color,
+              clampToGround: true,
+            }
+          });
+          e._isTripData = true;
+        }
       });
     }
   });
 
-  // Render stop markers
+  // Render stop markers as labeled billboards
   stops.sort((a, b) => a.stop_order - b.stop_order);
   stops.forEach((stop, i) => {
-    const el = document.createElement('div');
-    el.className = 'stop-marker';
-    el.textContent = String(i + 1);
-    el.title = stop.title || 'Stop ' + (i + 1);
+    // Create a canvas-based pin icon
+    const canvas = document.createElement('canvas');
+    canvas.width = 48; canvas.height = 48;
+    const ctx = canvas.getContext('2d');
+    // Circle
+    ctx.beginPath(); ctx.arc(24, 24, 20, 0, Math.PI * 2);
+    ctx.fillStyle = '#f59e0b'; ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = 'white'; ctx.stroke();
+    // Number
+    ctx.fillStyle = '#1a1a2e'; ctx.font = 'bold 18px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(i + 1), 24, 25);
 
-    const marker = new maplibregl.Marker({ element: el, draggable: !state.readOnly })
-      .setLngLat([stop.lng, stop.lat])
-      .addTo(map);
-
-    // Popup on click
-    el.addEventListener('click', () => {
-      const popup = new maplibregl.Popup({ offset: 20, closeButton: true })
-        .setHTML('<div style="padding:12px;color:#1a1a2e"><strong>' + escapeHtml(stop.title) + '</strong>' +
-          (stop.description ? '<br><span style="font-size:12px;color:#666">' + escapeHtml(stop.description) + '</span>' : '') +
-          '</div>')
-        .setLngLat([stop.lng, stop.lat])
-        .addTo(map);
+    const entity = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat, 10),
+      billboard: {
+        image: canvas.toDataURL(),
+        width: 36,
+        height: 36,
+        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      label: {
+        text: stop.title || 'Stop ' + (i + 1),
+        font: 'bold 13px sans-serif',
+        fillColor: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.BLACK,
+        outlineWidth: 3,
+        style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+        pixelOffset: new Cesium.Cartesian2(0, -28),
+        heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      }
     });
-
-    // Drag end — update stop location
-    if (!state.readOnly) {
-      marker.on('dragend', async () => {
-        const pos = marker.getLngLat();
-        try {
-          await api('PUT', '/api/stops/' + stop.id, {
-            title: stop.title,
-            description: stop.description,
-            lat: pos.lat,
-            lng: pos.lng,
-            elevation: stop.elevation || 0,
-            stop_order: stop.stop_order,
-            arrived_at: stop.arrived_at,
-          });
-          toast('Stop moved');
-          // Update local data
-          stop.lat = pos.lat;
-          stop.lng = pos.lng;
-        } catch (err) {
-          toast(err.message, 'error');
-        }
-      });
-    }
-
-    state.mapMarkers.push(marker);
+    entity._isTripData = true;
+    entity._stopData = stop;
+    state.mapMarkers.push(entity);
   });
 
   // Render photo markers
   photos.forEach(photo => {
     if (photo.lat == null || photo.lng == null) return;
 
-    const el = document.createElement('div');
-    el.className = 'photo-marker';
-    const img = document.createElement('img');
-    img.src = '/uploads/' + photo.filename;
-    img.alt = photo.caption || '';
-    el.appendChild(img);
-
-    const marker = new maplibregl.Marker({ element: el, draggable: !state.readOnly })
-      .setLngLat([photo.lng, photo.lat])
-      .addTo(map);
-
-    el.addEventListener('click', () => {
-      new maplibregl.Popup({ offset: 24, closeButton: true, maxWidth: '280px' })
-        .setHTML(
-          '<div class="map-popup-photo">' +
-          '<img src="/uploads/' + escapeHtml(photo.filename) + '" alt="">' +
-          (photo.caption ? '<div class="popup-caption">' + escapeHtml(photo.caption) + '</div>' : '') +
-          '</div>'
-        )
-        .setLngLat([photo.lng, photo.lat])
-        .addTo(map);
+    // Create a circular photo billboard using canvas
+    const photoCanvas = document.createElement('canvas');
+    photoCanvas.width = 64; photoCanvas.height = 64;
+    const pCtx = photoCanvas.getContext('2d');
+    const photoImg = new Image();
+    photoImg.crossOrigin = 'anonymous';
+    photoImg.src = '/uploads/' + photo.filename;
+    const photoEntity = viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat, 15),
+      billboard: {
+        image: photoCanvas.toDataURL(), // placeholder white circle
+        width: 44,
+        height: 44,
+        verticalOrigin: Cesium.VerticalOrigin.CENTER,
+        heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+      point: {
+        pixelSize: 10,
+        color: Cesium.Color.WHITE,
+        outlineColor: Cesium.Color.fromCssColorString('#3b82f6'),
+        outlineWidth: 3,
+        heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      }
     });
-
-    // Drag to reposition photo
-    if (!state.readOnly) {
-      marker.on('dragend', async () => {
-        const pos = marker.getLngLat();
-        try {
-          await api('PUT', '/api/photos/' + photo.id, {
-            caption: photo.caption || '',
-            lat: pos.lat,
-            lng: pos.lng,
-            stop_id: photo.stop_id,
-          });
-          toast('Photo moved');
-          photo.lat = pos.lat;
-          photo.lng = pos.lng;
-        } catch (err) {
-          toast(err.message, 'error');
-        }
-      });
-    }
-
-    state.photoMarkers.push(marker);
+    // Load photo and render into circular canvas
+    photoImg.onload = function() {
+      pCtx.save();
+      pCtx.beginPath(); pCtx.arc(32, 32, 28, 0, Math.PI * 2); pCtx.clip();
+      const s = Math.min(photoImg.width, photoImg.height);
+      const sx = (photoImg.width - s) / 2;
+      const sy = (photoImg.height - s) / 2;
+      pCtx.drawImage(photoImg, sx, sy, s, s, 4, 4, 56, 56);
+      pCtx.restore();
+      // White border
+      pCtx.beginPath(); pCtx.arc(32, 32, 29, 0, Math.PI * 2);
+      pCtx.lineWidth = 3; pCtx.strokeStyle = 'white'; pCtx.stroke();
+      if (photoEntity.billboard) {
+        photoEntity.billboard.image = photoCanvas.toDataURL();
+      }
+    };
+    const entity = photoEntity;
+    entity._isTripData = true;
+    entity._photoData = photo;
+    state.photoMarkers.push(entity);
   });
 
-  // Fit bounds to all data
+  // Fit view
   fitMapToTrip();
 }
 
 function fitMapToTrip() {
-  const trip = state.currentTrip;
-  if (!trip) return;
-
-  const allCoords = [];
-
-  (trip.stops || []).forEach(s => allCoords.push([s.lng, s.lat]));
-  (trip.photos || []).forEach(p => {
-    if (p.lat != null && p.lng != null) allCoords.push([p.lng, p.lat]);
-  });
-
-  // Routes
-  (trip.routes || []).forEach(route => {
-    try {
-      const gj = typeof route.geojson === 'string' ? JSON.parse(route.geojson) : route.geojson;
-      if (gj.features) {
-        gj.features.forEach(f => {
-          if (f.geometry && f.geometry.coordinates) {
-            if (f.geometry.type === 'LineString') {
-              f.geometry.coordinates.forEach(c => allCoords.push([c[0], c[1]]));
-            }
-          }
-        });
-      }
-    } catch (e) {}
-  });
-
-  if (allCoords.length === 0) return;
-
-  if (allCoords.length === 1) {
-    map.flyTo({ center: allCoords[0], zoom: 12, pitch: 45 });
-    return;
-  }
-
-  const bounds = new maplibregl.LngLatBounds();
-  allCoords.forEach(c => bounds.extend(c));
-  map.fitBounds(bounds, { padding: 80, maxZoom: 15, pitch: 45 });
+  const tripEntities = viewer.entities.values.filter(e => e._isTripData);
+  if (tripEntities.length === 0) return;
+  // Use Cesium's built-in flyTo to frame all entities nicely
+  viewer.flyTo(viewer.entities, { duration: 2.5 });
 }
 
 // ---------------------------------------------------------------
@@ -2612,7 +2655,11 @@ function renderTimeline() {
       const lat = parseFloat(card.dataset.lat);
       const lng = parseFloat(card.dataset.lng);
       if (!isNaN(lat) && !isNaN(lng)) {
-        map.flyTo({ center: [lng, lat], zoom: 14, pitch: 50 });
+        viewer.camera.flyTo({
+          destination: Cesium.Cartesian3.fromDegrees(lng, lat, 8000),
+          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+          duration: 1.5,
+        });
       }
     });
   });
@@ -2648,21 +2695,21 @@ document.addEventListener('keydown', (e) => {
       state.drawMode = false;
       state.drawPoints = [];
       $('#drawIndicator').classList.remove('active');
-      map.getCanvas().style.cursor = '';
-      if (map.getSource('draw-preview')) {
-        map.getSource('draw-preview').setData({ type: 'FeatureCollection', features: [] });
-      }
+      viewer.canvas.style.cursor = '';
+      viewer.entities.values
+        .filter(e => e._isDrawPreview)
+        .forEach(e => viewer.entities.remove(e));
     }
     if (state.geotagMode) {
       state.geotagMode = false;
       state.geotagPhotoId = null;
       $('#geotagIndicator').classList.remove('active');
-      map.getCanvas().style.cursor = '';
+      viewer.canvas.style.cursor = '';
     }
     if (state.addStopMode) {
       state.addStopMode = false;
       $('#stopIndicator').classList.remove('active');
-      map.getCanvas().style.cursor = '';
+      viewer.canvas.style.cursor = '';
     }
   }
 });
