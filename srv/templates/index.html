@@ -2002,11 +2002,16 @@ function renderTripDetail() {
   } else {
     stops.sort((a, b) => a.stop_order - b.stop_order);
     stops.forEach((stop, i) => {
+      const stopPhotoCount = photos.filter(p => p.stop_id === stop.id).length;
       html += '<div class="stop-item" data-stop-id="' + escapeHtml(stop.id) + '">';
       html += '<div class="stop-number">' + (i + 1) + '</div>';
       html += '<div class="stop-info">';
       html += '<h4>' + escapeHtml(stop.title || 'Untitled Stop') + '</h4>';
       if (stop.description) html += '<p>' + escapeHtml(stop.description) + '</p>';
+      html += '<p style="font-size:11px;color:var(--text-dim);margin-top:2px">';
+      html += '📷 ' + stopPhotoCount + ' photo' + (stopPhotoCount !== 1 ? 's' : '');
+      html += ' · ' + stop.lat.toFixed(4) + ', ' + stop.lng.toFixed(4);
+      html += '</p>';
       if (stop.arrived_at) html += '<p style="color:var(--orange);margin-top:2px">' + formatDate(stop.arrived_at) + '</p>';
       html += '</div>';
       html += '<div class="stop-actions">';
