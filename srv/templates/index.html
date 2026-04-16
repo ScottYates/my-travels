@@ -898,7 +898,43 @@ textarea.form-input {
   max-height: 70vh;
   object-fit: contain;
   border-radius: var(--radius);
+  cursor: zoom-in;
 }
+
+/* Full-resolution overlay */
+.fullres-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.95);
+  z-index: 400;
+  display: none;
+  overflow: auto;
+  cursor: zoom-out;
+  text-align: center;
+}
+.fullres-overlay.active { display: block; }
+.fullres-overlay img {
+  max-width: none;
+  cursor: zoom-out;
+  margin: 20px auto;
+  display: block;
+}
+.fullres-hint {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.7);
+  color: #e2e8f0;
+  padding: 8px 20px;
+  border-radius: 20px;
+  font-size: 13px;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.6s;
+  z-index: 401;
+}
+.fullres-hint.fade { opacity: 0; }
 
 .photo-modal-info {
   background: var(--navy);
@@ -1151,6 +1187,12 @@ body.readonly .edit-only { display: none !important; }
       <button class="modal-btn confirm" id="promptOK">OK</button>
     </div>
   </div>
+</div>
+
+<!-- Full-resolution image overlay -->
+<div class="fullres-overlay" id="fullresOverlay">
+  <img id="fullresImg" src="" alt="">
+  <div class="fullres-hint" id="fullresHint">Click anywhere to close</div>
 </div>
 
 <!-- Photo lightbox modal -->
@@ -2320,6 +2362,33 @@ function openPhotoModal(photoId) {
   $('#photoModalCaption').value = photo.caption || '';
   $('#photoModal').classList.add('active');
 }
+
+// Click modal image → show full resolution
+$('#photoModalImg').addEventListener('click', (e) => {
+  e.stopPropagation();
+  $('#fullresImg').src = $('#photoModalImg').src;
+  $('#fullresOverlay').classList.add('active');
+  const hint = $('#fullresHint');
+  hint.classList.remove('fade');
+  setTimeout(() => hint.classList.add('fade'), 2000);
+});
+
+// Close full-res overlay on click
+$('#fullresOverlay').addEventListener('click', () => {
+  $('#fullresOverlay').classList.remove('active');
+  $('#fullresImg').src = '';
+});
+
+// Escape key closes full-res first, then modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if ($('#fullresOverlay').classList.contains('active')) {
+      e.stopImmediatePropagation();
+      $('#fullresOverlay').classList.remove('active');
+      $('#fullresImg').src = '';
+    }
+  }
+});
 
 $('#photoModalClose').addEventListener('click', () => {
   $('#photoModal').classList.remove('active');
