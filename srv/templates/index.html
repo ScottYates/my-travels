@@ -1581,6 +1581,28 @@ function initMap() {
     'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
   ).then(function(provider) {
     viewer.imageryLayers.addImageryProvider(provider);
+    // State/province boundary outlines via GeoJSON
+    Cesium.GeoJsonDataSource.load(
+      'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json',
+      {
+        stroke: Cesium.Color.WHITE.withAlpha(0.5),
+        strokeWidth: 2,
+        fill: Cesium.Color.TRANSPARENT,
+        clampToGround: true
+      }
+    ).then(function(ds) {
+      viewer.dataSources.add(ds);
+      // Remove polygon fills, keep only outlines
+      var entities = ds.entities.values;
+      for (var i = 0; i < entities.length; i++) {
+        if (entities[i].polygon) {
+          entities[i].polygon.fill = false;
+          entities[i].polygon.outline = true;
+          entities[i].polygon.outlineColor = Cesium.Color.WHITE.withAlpha(0.5);
+          entities[i].polygon.outlineWidth = 2;
+        }
+      }
+    }).catch(function() {});
     // Labels: dark_only_labels has white text with dark halo (black outline)
     var labels = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
