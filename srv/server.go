@@ -9,7 +9,7 @@ import (
 	"html/template"
 	"image"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	_ "image/png"
 	"io"
 	"log/slog"
@@ -105,6 +105,9 @@ func (s *Server) Serve(addr string) error {
 
 	// Uploaded photos
 	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.UploadDir))))
+
+	// Photo thumbnails (128px, generated on demand and cached)
+	mux.HandleFunc("GET /thumb/{filename...}", s.handleThumbnail)
 
 	// Trip CRUD
 	mux.HandleFunc("GET /api/trips", s.handleListTrips)
@@ -712,14 +715,96 @@ func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remove file from disk
+	// Remove file and thumbnail from disk
 	os.Remove(filepath.Join(s.UploadDir, photo.Filename))
+	os.Remove(filepath.Join(s.UploadDir, "thumbs", photo.Filename))
 
 	if err := q.DeletePhoto(r.Context(), id); err != nil {
 		jsonError(w, "failed to delete photo", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnails
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	filename := r.PathValue("filename")
+	// Sanitize: only allow simple filenames (uuid.ext)
+	if strings.Contains(filename, "/") || strings.Contains(filename, "..") {
+		http.NotFound(w, r)
+		return
+	}
+
+	thumbDir := filepath.Join(s.UploadDir, "thumbs")
+	thumbPath := filepath.Join(thumbDir, filename)
+
+	// Serve cached thumbnail if it exists
+	if info, err := os.Stat(thumbPath); err == nil {
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+		http.ServeFile(w, r, thumbPath)
+		return
+	}
+
+	// Generate thumbnail
+	srcPath := filepath.Join(s.UploadDir, filename)
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer srcFile.Close()
+
+	srcImg, _, err := image.Decode(srcFile)
+	if err != nil {
+		http.Error(w, "failed to decode image", http.StatusInternalServerError)
+		return
+	}
+
+	// Resize to fit within 128x128 (simple nearest-neighbor via SubImage + draw)
+	const maxDim = 128
+	bounds := srcImg.Bounds()
+	sw, sh := bounds.Dx(), bounds.Dy()
+	var tw, th int
+	if sw >= sh {
+		tw = maxDim
+		th = maxDim * sh / sw
+		if th < 1 { th = 1 }
+	} else {
+		th = maxDim
+		tw = maxDim * sw / sh
+		if tw < 1 { tw = 1 }
+	}
+
+	// Use simple box-filter downscaling
+	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
+	for y := 0; y < th; y++ {
+		for x := 0; x < tw; x++ {
+			scx := bounds.Min.X + x*sw/tw
+			scy := bounds.Min.Y + y*sh/th
+			dst.Set(x, y, srcImg.At(scx, scy))
+		}
+	}
+
+	// Encode to JPEG
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: 75}); err != nil {
+		http.Error(w, "failed to encode thumbnail", http.StatusInternalServerError)
+		return
+	}
+
+	// Cache to disk
+	os.MkdirAll(thumbDir, 0755)
+	os.WriteFile(thumbPath, buf.Bytes(), 0644)
+
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	w.Write(buf.Bytes())
 }
 
 // ---------------------------------------------------------------------------

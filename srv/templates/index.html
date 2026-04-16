@@ -1369,10 +1369,15 @@ function initMap() {
     selectionIndicator: false,
     infoBox: false,
     skyAtmosphere: new Cesium.SkyAtmosphere(),
+    requestRenderMode: true,
+    maximumRenderTimeChange: 0.5,
     contextOptions: {
       webgl: { alpha: false }
     }
   });
+
+  // Reduce tile detail slightly for smoother transitions
+  viewer.scene.globe.maximumScreenSpaceError = 4;
 
   // Add ESRI World Imagery (satellite) + labels overlay
   Cesium.ArcGisMapServerImageryProvider.fromUrl(
@@ -2537,29 +2542,17 @@ function renderMapData() {
     state.mapMarkers.push(entity);
   });
 
-  // Render photo markers
+  // Render photo markers – place entities immediately with a simple placeholder,
+  // then load actual thumbnail images in small batches to avoid stutter.
+  const photoEntities = [];
   photos.forEach(photo => {
     if (photo.lat == null || photo.lng == null) return;
 
-    // Create a circular photo billboard using canvas
-    const photoCanvas = document.createElement('canvas');
-    photoCanvas.width = 64; photoCanvas.height = 64;
-    const pCtx = photoCanvas.getContext('2d');
-    const photoImg = new Image();
-    photoImg.crossOrigin = 'anonymous';
-    photoImg.src = '/uploads/' + photo.filename;
+    // Lightweight placeholder: a small blue dot (the point graphic) until the image loads
     const photoEntity = viewer.entities.add({
       position: Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat, 15),
-      billboard: {
-        image: photoCanvas.toDataURL(), // placeholder white circle
-        width: 44,
-        height: 44,
-        verticalOrigin: Cesium.VerticalOrigin.CENTER,
-        heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      },
       point: {
-        pixelSize: 10,
+        pixelSize: 14,
         color: Cesium.Color.WHITE,
         outlineColor: Cesium.Color.fromCssColorString('#3b82f6'),
         outlineWidth: 3,
@@ -2567,37 +2560,124 @@ function renderMapData() {
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       }
     });
-    // Load photo and render into circular canvas
-    photoImg.onload = function() {
-      pCtx.save();
-      pCtx.beginPath(); pCtx.arc(32, 32, 28, 0, Math.PI * 2); pCtx.clip();
-      const s = Math.min(photoImg.width, photoImg.height);
-      const sx = (photoImg.width - s) / 2;
-      const sy = (photoImg.height - s) / 2;
-      pCtx.drawImage(photoImg, sx, sy, s, s, 4, 4, 56, 56);
-      pCtx.restore();
-      // White border
-      pCtx.beginPath(); pCtx.arc(32, 32, 29, 0, Math.PI * 2);
-      pCtx.lineWidth = 3; pCtx.strokeStyle = 'white'; pCtx.stroke();
-      if (photoEntity.billboard) {
-        photoEntity.billboard.image = photoCanvas.toDataURL();
-      }
-    };
-    const entity = photoEntity;
-    entity._isTripData = true;
-    entity._photoData = photo;
-    state.photoMarkers.push(entity);
+    photoEntity._isTripData = true;
+    photoEntity._photoData = photo;
+    state.photoMarkers.push(photoEntity);
+    photoEntities.push({ entity: photoEntity, photo: photo });
   });
 
-  // Fit view
+  // Fit view immediately (before thumbnails load)
   fitMapToTrip();
+
+  // Batch-load thumbnails after the fly animation has started
+  const BATCH = 4;
+  async function loadPhotoBatch(startIdx) {
+    const batch = photoEntities.slice(startIdx, startIdx + BATCH);
+    if (batch.length === 0) return;
+    await Promise.all(batch.map(({ entity, photo }) => new Promise(resolve => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 64; canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = function() {
+        ctx.save();
+        ctx.beginPath(); ctx.arc(32, 32, 28, 0, Math.PI * 2); ctx.clip();
+        const s = Math.min(img.width, img.height);
+        const sx = (img.width - s) / 2;
+        const sy = (img.height - s) / 2;
+        ctx.drawImage(img, sx, sy, s, s, 4, 4, 56, 56);
+        ctx.restore();
+        ctx.beginPath(); ctx.arc(32, 32, 29, 0, Math.PI * 2);
+        ctx.lineWidth = 3; ctx.strokeStyle = 'white'; ctx.stroke();
+        if (entity.billboard) {
+          entity.billboard.image = canvas.toDataURL();
+        } else {
+          entity.billboard = new Cesium.BillboardGraphics({
+            image: canvas.toDataURL(),
+            width: 44,
+            height: 44,
+            verticalOrigin: Cesium.VerticalOrigin.CENTER,
+            heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          });
+          // Hide the placeholder dot once billboard is ready
+          if (entity.point) entity.point.show = false;
+        }
+        viewer.scene.requestRender();
+        resolve();
+      };
+      img.onerror = resolve;
+      img.src = '/thumb/' + photo.filename;
+    })));
+    // Small delay between batches to let the renderer breathe
+    await new Promise(r => setTimeout(r, 80));
+    await loadPhotoBatch(startIdx + BATCH);
+  }
+  // Start loading thumbnails after a brief delay (let fly-to begin)
+  setTimeout(() => loadPhotoBatch(0), 400);
 }
 
 function fitMapToTrip() {
   const tripEntities = viewer.entities.values.filter(e => e._isTripData);
   if (tripEntities.length === 0) return;
-  // Use Cesium's built-in flyTo to frame all entities nicely
-  viewer.flyTo(viewer.entities, { duration: 2.5 });
+
+  // Compute bounding box from trip entities
+  let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+  let count = 0;
+  tripEntities.forEach(e => {
+    if (!e.position) return;
+    const cart = Cesium.Cartographic.fromCartesian(
+      e.position.getValue ? e.position.getValue(Cesium.JulianDate.now()) : e.position
+    );
+    if (!cart) return;
+    const lat = Cesium.Math.toDegrees(cart.latitude);
+    const lng = Cesium.Math.toDegrees(cart.longitude);
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+    if (lng < minLng) minLng = lng;
+    if (lng > maxLng) maxLng = lng;
+    count++;
+  });
+  if (count === 0) return;
+
+  // Add padding around the bounding box
+  const latSpan = Math.max(maxLat - minLat, 0.005);
+  const lngSpan = Math.max(maxLng - minLng, 0.005);
+  const pad = 0.3; // 30% padding
+  minLat -= latSpan * pad;
+  maxLat += latSpan * pad;
+  minLng -= lngSpan * pad;
+  maxLng += lngSpan * pad;
+
+  const rect = Cesium.Rectangle.fromDegrees(minLng, minLat, maxLng, maxLat);
+
+  // Compute a reasonable altitude based on extent of data
+  const extentKm = Math.max(
+    latSpan * 111,
+    lngSpan * 111 * Math.cos(Cesium.Math.toRadians((minLat + maxLat) / 2))
+  );
+  // Altitude: 2x extent in meters, minimum 15km (so you see context), max 8M
+  const altitude = Math.min(8000000, Math.max(15000, extentKm * 2000));
+
+  const centerLat = (minLat + maxLat) / 2;
+  const centerLng = (minLng + maxLng) / 2;
+
+  // Use steeper (more top-down) pitch for tight clusters, shallower for wide areas
+  const pitch = extentKm < 5 ? -75 : -55;
+
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, altitude),
+    orientation: {
+      heading: 0,
+      pitch: Cesium.Math.toRadians(pitch),
+      roll: 0,
+    },
+    duration: 2.0,
+    complete: function() {
+      viewer.scene.requestRender();
+    }
+  });
 }
 
 // ---------------------------------------------------------------
