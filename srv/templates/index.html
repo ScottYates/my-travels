@@ -1573,24 +1573,26 @@ function initMap() {
     }
   });
 
-  // Crisp tiles: lower = sharper labels/imagery
-  viewer.scene.globe.maximumScreenSpaceError = 1.5;
   // Disable FXAA post-processing (it blurs text/labels)
   viewer.scene.postProcessStages.fxaa.enabled = false;
 
-  // Add ESRI World Imagery (satellite) + labels overlay
+  // Satellite imagery (ESRI) + crisp label overlay (CartoDB retina @2x)
   Cesium.ArcGisMapServerImageryProvider.fromUrl(
     'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
   ).then(function(provider) {
     viewer.imageryLayers.addImageryProvider(provider);
-    // Add labels on top
-    return Cesium.ArcGisMapServerImageryProvider.fromUrl(
-      'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer'
+    // Add labels on top of satellite
+    var labels = viewer.imageryLayers.addImageryProvider(
+      new Cesium.UrlTemplateImageryProvider({
+        url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}@2x.png',
+        subdomains: ['a', 'b', 'c', 'd'],
+        minimumLevel: 1,
+        maximumLevel: 18,
+        credit: 'Labels © OpenStreetMap contributors © CARTO'
+      })
     );
-  }).then(function(labelsProvider) {
-    viewer.imageryLayers.addImageryProvider(labelsProvider);
+    labels.alpha = 0.9;
   }).catch(function() {
-    // Fallback to OpenStreetMap if ESRI fails
     viewer.imageryLayers.addImageryProvider(
       new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
     );
