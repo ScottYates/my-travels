@@ -269,9 +269,12 @@ func (s *Server) handleUpdateTrip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	var body struct {
-		Title        string  `json:"title"`
-		Description  string  `json:"description"`
-		CoverPhotoID *string `json:"cover_photo_id"`
+		Title             string   `json:"title"`
+		Description       string   `json:"description"`
+		CoverPhotoID      *string  `json:"cover_photo_id"`
+		DefaultCamHeading *float64 `json:"default_cam_heading"`
+		DefaultCamPitch   *float64 `json:"default_cam_pitch"`
+		DefaultCamRange   *float64 `json:"default_cam_range"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid JSON body", http.StatusBadRequest)
@@ -281,7 +284,8 @@ func (s *Server) handleUpdateTrip(w http.ResponseWriter, r *http.Request) {
 	q := dbgen.New(s.DB)
 
 	// Verify trip exists
-	if _, err := q.GetTrip(r.Context(), id); err != nil {
+	existing, err := q.GetTrip(r.Context(), id)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			jsonError(w, "trip not found", http.StatusNotFound)
 			return
@@ -290,12 +294,29 @@ func (s *Server) handleUpdateTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Preserve existing camera defaults if not provided in this update
+	camH := body.DefaultCamHeading
+	if camH == nil {
+		camH = existing.DefaultCamHeading
+	}
+	camP := body.DefaultCamPitch
+	if camP == nil {
+		camP = existing.DefaultCamPitch
+	}
+	camR := body.DefaultCamRange
+	if camR == nil {
+		camR = existing.DefaultCamRange
+	}
+
 	if err := q.UpdateTrip(r.Context(), dbgen.UpdateTripParams{
-		Title:        body.Title,
-		Description:  body.Description,
-		CoverPhotoID: body.CoverPhotoID,
-		UpdatedAt:    time.Now(),
-		ID:           id,
+		Title:             body.Title,
+		Description:       body.Description,
+		CoverPhotoID:      body.CoverPhotoID,
+		DefaultCamHeading: camH,
+		DefaultCamPitch:   camP,
+		DefaultCamRange:   camR,
+		UpdatedAt:         time.Now(),
+		ID:                id,
 	}); err != nil {
 		jsonError(w, "failed to update trip", http.StatusInternalServerError)
 		return
@@ -661,10 +682,13 @@ func (s *Server) handleUpdatePhoto(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	var body struct {
-		StopID  *string  `json:"stop_id"`
-		Caption string   `json:"caption"`
-		Lat     *float64 `json:"lat"`
-		Lng     *float64 `json:"lng"`
+		StopID     *string  `json:"stop_id"`
+		Caption    string   `json:"caption"`
+		Lat        *float64 `json:"lat"`
+		Lng        *float64 `json:"lng"`
+		CamHeading *float64 `json:"cam_heading"`
+		CamPitch   *float64 `json:"cam_pitch"`
+		CamRange   *float64 `json:"cam_range"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid JSON body", http.StatusBadRequest)
@@ -683,11 +707,14 @@ func (s *Server) handleUpdatePhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := q.UpdatePhoto(r.Context(), dbgen.UpdatePhotoParams{
-		StopID:  body.StopID,
-		Caption: body.Caption,
-		Lat:     body.Lat,
-		Lng:     body.Lng,
-		ID:      id,
+		StopID:     body.StopID,
+		Caption:    body.Caption,
+		Lat:        body.Lat,
+		Lng:        body.Lng,
+		CamHeading: body.CamHeading,
+		CamPitch:   body.CamPitch,
+		CamRange:   body.CamRange,
+		ID:         id,
 	}); err != nil {
 		jsonError(w, "failed to update photo", http.StatusInternalServerError)
 		return

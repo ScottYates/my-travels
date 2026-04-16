@@ -28,6 +28,9 @@ type Photo struct {
 	Height       int64      `json:"height"`
 	SizeBytes    int64      `json:"size_bytes"`
 	CreatedAt    time.Time  `json:"created_at"`
+	CamHeading   *float64   `json:"cam_heading"`
+	CamPitch     *float64   `json:"cam_pitch"`
+	CamRange     *float64   `json:"cam_range"`
 }
 
 type Route struct {
@@ -53,13 +56,16 @@ type Stop struct {
 }
 
 type Trip struct {
-	ID           string    `json:"id"`
-	ShareID      string    `json:"share_id"`
-	Title        string    `json:"title"`
-	Description  string    `json:"description"`
-	CoverPhotoID *string   `json:"cover_photo_id"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                string    `json:"id"`
+	ShareID           string    `json:"share_id"`
+	Title             string    `json:"title"`
+	Description       string    `json:"description"`
+	CoverPhotoID      *string   `json:"cover_photo_id"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	DefaultCamHeading *float64  `json:"default_cam_heading"`
+	DefaultCamPitch   *float64  `json:"default_cam_pitch"`
+	DefaultCamRange   *float64  `json:"default_cam_range"`
 }
 
 type Visitor struct {

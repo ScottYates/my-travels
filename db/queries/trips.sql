@@ -12,7 +12,7 @@ SELECT * FROM trips WHERE share_id = ?;
 SELECT * FROM trips ORDER BY updated_at DESC;
 
 -- name: UpdateTrip :exec
-UPDATE trips SET title = ?, description = ?, cover_photo_id = ?, updated_at = ? WHERE id = ?;
+UPDATE trips SET title = ?, description = ?, cover_photo_id = ?, default_cam_heading = ?, default_cam_pitch = ?, default_cam_range = ?, updated_at = ? WHERE id = ?;
 
 -- name: DeleteTrip :exec
 DELETE FROM trips WHERE id = ?;
@@ -47,7 +47,7 @@ SELECT * FROM photos WHERE stop_id = ? ORDER BY created_at ASC;
 SELECT * FROM photos WHERE id = ?;
 
 -- name: UpdatePhoto :exec
-UPDATE photos SET stop_id = ?, caption = ?, lat = ?, lng = ? WHERE id = ?;
+UPDATE photos SET stop_id = ?, caption = ?, lat = ?, lng = ?, cam_heading = ?, cam_pitch = ?, cam_range = ? WHERE id = ?;
 
 -- name: DeletePhoto :exec
 DELETE FROM photos WHERE id = ?;
