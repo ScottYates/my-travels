@@ -989,7 +989,7 @@ const clusterRadiusMeters = clusterRadiusMiles * 1609.344
 // using the OpenStreetMap Nominatim API. Returns empty string on failure.
 func reverseGeocode(lat, lng float64) string {
 	url := fmt.Sprintf(
-		"https://nominatim.openstreetmap.org/reverse?lat=%f&lon=%f&format=json&zoom=10&addressdetails=1",
+		"https://nominatim.openstreetmap.org/reverse?lat=%f&lon=%f&format=json&zoom=10&addressdetails=1&accept-language=en",
 		lat, lng,
 	)
 	client := &http.Client{Timeout: 5 * time.Second}
