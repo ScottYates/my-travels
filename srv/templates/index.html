@@ -427,11 +427,12 @@ textarea.form-input {
   cursor: pointer;
   position: relative;
   border: 2px solid transparent;
-  transition: all var(--transition);
+  transition: border-color 0.15s ease;
+  will-change: border-color;
 }
 
-.photo-thumb:hover { border-color: var(--accent); transform: scale(1.02); }
-.photo-thumb.focused { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.5); transform: scale(1.02); }
+.photo-thumb:hover { border-color: var(--accent); }
+.photo-thumb.focused { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.5); }
 
 .photo-thumb img {
   width: 100%;
@@ -441,13 +442,14 @@ textarea.form-input {
 
 .photo-thumb .photo-overlay {
   position: absolute;
-  inset: 0;
-  background: linear-gradient(transparent 50%, rgba(0,0,0,0.6));
+  left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.55);
   opacity: 0;
-  transition: opacity var(--transition);
+  transition: opacity 0.15s ease;
   display: flex;
   align-items: flex-end;
-  padding: 8px;
+  padding: 6px 8px;
+  pointer-events: none;
 }
 
 .photo-thumb:hover .photo-overlay { opacity: 1; }
@@ -632,12 +634,11 @@ textarea.form-input {
   padding: 18px;
   margin-bottom: 16px;
   cursor: pointer;
-  transition: all var(--transition);
+  transition: border-color 0.15s ease;
 }
 
 .timeline-card:hover {
   border-color: var(--orange);
-  transform: translateX(2px);
 }
 
 .timeline-card::before {
@@ -677,10 +678,28 @@ textarea.form-input {
 .timeline-card .tc-count {
   font-size: 11px;
   color: var(--text-dim);
-  margin-bottom: 8px;
+  margin-bottom: 0;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+}
+
+.timeline-card .tc-toggle {
+  font-size: 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  display: inline-block;
+  margin-left: 6px;
+  transition: transform 0.2s ease;
+}
+
+.timeline-card.collapsed .timeline-photos {
+  display: none;
+}
+
+.timeline-card.collapsed .tc-toggle {
+  transform: rotate(-90deg);
 }
 
 .timeline-photos {
@@ -1252,6 +1271,7 @@ body.readonly .edit-only { display: none !important; }
     <input type="text" id="photoModalCaption" placeholder="Add a caption...">
     <button class="btn btn-primary btn-sm edit-only" id="photoModalSave">Save</button>
     <button class="btn btn-secondary btn-sm edit-only" id="photoModalGeotag">📍 Set Location</button>
+    <button class="btn btn-secondary btn-sm edit-only" id="photoModalRescan">🔍 Rescan EXIF</button>
     <button class="btn btn-danger btn-sm edit-only" id="photoModalDelete">Delete</button>
     <button class="btn btn-ghost btn-sm" id="photoModalClose">✕ Close</button>
   </div>
@@ -2022,7 +2042,7 @@ function renderTripDetail() {
     photos.forEach(photo => {
       const hasLocation = photo.lat != null && photo.lng != null;
       html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '">';
-      html += '<img src="/uploads/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
+      html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
       html += '<div class="photo-overlay"><span>' + escapeHtml(photo.caption || photo.original_name) + '</span></div>';
       if (!hasLocation) {
         html += '<span class="photo-no-location">No 📍</span>';
@@ -2272,7 +2292,7 @@ const UPLOAD_WORKER_SRC = [
 const uploadWorkerBlob = new Blob([UPLOAD_WORKER_SRC], { type: 'application/javascript' });
 const uploadWorkerURL = URL.createObjectURL(uploadWorkerBlob);
 
-const MAX_CONCURRENT = 20;
+const MAX_CONCURRENT = 10;
 const MAX_RETRIES = 3;
 let uploadIdCounter = 0;
 
@@ -2638,6 +2658,9 @@ function openPhotoModal(photoId) {
   state.selectedPhotoId = photoId;
   $('#photoModalImg').src = '/uploads/' + photo.filename;
   $('#photoModalCaption').value = photo.caption || '';
+  // Show rescan button only for photos without location
+  const hasLoc = photo.lat != null && photo.lng != null;
+  $('#photoModalRescan').style.display = hasLoc ? 'none' : '';
   $('#photoModal').classList.add('active');
 }
 
@@ -2712,6 +2735,29 @@ $('#photoModalGeotag').addEventListener('click', () => {
   $('#photoModal').classList.remove('active');
   $('#geotagIndicator').classList.add('active');
   viewer.canvas.style.cursor = 'crosshair';
+});
+
+$('#photoModalRescan').addEventListener('click', async () => {
+  if (!state.selectedPhotoId) return;
+  const btn = $('#photoModalRescan');
+  btn.disabled = true;
+  btn.textContent = '🔍 Scanning…';
+  try {
+    const result = await api('POST', '/api/photos/' + state.selectedPhotoId + '/rescan');
+    if (result.location_found) {
+      toast('GPS location found! Lat: ' + result.lat.toFixed(4) + ', Lng: ' + result.lng.toFixed(4));
+    } else {
+      toast('No GPS data found in this image', 'error');
+    }
+    await reloadCurrentTrip();
+    // Re-open modal on updated photo
+    openPhotoModal(state.selectedPhotoId);
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔍 Rescan EXIF';
+  }
 });
 
 $('#cancelGeotag').addEventListener('click', () => {
@@ -3433,11 +3479,11 @@ function renderTimeline() {
     if (stop.description) {
       html += '<div class="tc-desc">' + escapeHtml(stop.description) + '</div>';
     }
-    html += '<div class="tc-count">' + allPhotos.length + ' photo' + (allPhotos.length !== 1 ? 's' : '') + '</div>';
+    html += '<div class="tc-count">' + allPhotos.length + ' photo' + (allPhotos.length !== 1 ? 's' : '') + '<span class="tc-toggle">▼</span></div>';
     if (allPhotos.length > 0) {
-      html += '<div class="timeline-photos">';
+      html += '<div class="timeline-photos" style="margin-top:8px">';
       allPhotos.forEach(p => {
-        html += '<img src="/uploads/' + escapeHtml(p.filename) + '" alt="' + escapeHtml(p.caption || '') + '" loading="lazy" data-photo-id="' + escapeHtml(p.id) + '">';
+        html += '<img src="/thumb/' + escapeHtml(p.filename) + '" alt="' + escapeHtml(p.caption || '') + '" loading="lazy" data-photo-id="' + escapeHtml(p.id) + '">';
       });
       html += '</div>';
     }
@@ -3447,11 +3493,22 @@ function renderTimeline() {
 
   timelineContent.innerHTML = html;
 
-  // Click card header to fly
+  // Click card: toggle collapse, or fly to location
   $$('.timeline-card').forEach(card => {
+    // Toggle collapse when clicking the count/toggle area
+    const toggle = card.querySelector('.tc-toggle');
+    const countEl = card.querySelector('.tc-count');
+    if (countEl) {
+      countEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        card.classList.toggle('collapsed');
+      });
+    }
+
+    // Click card body (not photos, not toggle) to fly
     card.addEventListener('click', (e) => {
-      // Don't fly if clicking a photo thumbnail
       if (e.target.tagName === 'IMG' && e.target.dataset.photoId) return;
+      if (e.target.closest('.tc-count')) return;
       const lat = parseFloat(card.dataset.lat);
       const lng = parseFloat(card.dataset.lng);
       if (!isNaN(lat) && !isNaN(lng)) {

@@ -135,6 +135,9 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/trips/{id}/routes", s.handleCreateRoute)
 	mux.HandleFunc("DELETE /api/routes/{id}", s.handleDeleteRoute)
 
+	// Photo rescan EXIF
+	mux.HandleFunc("POST /api/photos/{id}/rescan", s.handleRescanPhoto)
+
 	// Trip reset & auto-stops
 	mux.HandleFunc("POST /api/trips/{id}/reset", s.handleResetTrip)
 	mux.HandleFunc("POST /api/trips/{id}/auto-stops", s.handleAutoStops)
@@ -757,6 +760,78 @@ func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---------------------------------------------------------------------------
+// Rescan photo EXIF (re-extract GPS + timestamp from file on disk)
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleRescanPhoto(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ctx := r.Context()
+	q := dbgen.New(s.DB)
+
+	photo, err := q.GetPhoto(ctx, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "photo not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get photo", http.StatusInternalServerError)
+		return
+	}
+
+	// Read file from disk
+	filePath := filepath.Join(s.UploadDir, photo.Filename)
+	fileData, err := os.ReadFile(filePath)
+	if err != nil {
+		jsonError(w, "photo file not found on disk", http.StatusNotFound)
+		return
+	}
+
+	exifLat, exifLng, exifTime := extractEXIF(fileData)
+
+	// Update photo with any newly found data
+	newLat := photo.Lat
+	newLng := photo.Lng
+	if exifLat != nil {
+		newLat = exifLat
+	}
+	if exifLng != nil {
+		newLng = exifLng
+	}
+
+	if err := q.UpdatePhoto(ctx, dbgen.UpdatePhotoParams{
+		StopID:     photo.StopID,
+		Caption:    photo.Caption,
+		Lat:        newLat,
+		Lng:        newLng,
+		CamHeading: photo.CamHeading,
+		CamPitch:   photo.CamPitch,
+		CamRange:   photo.CamRange,
+		ID:         id,
+	}); err != nil {
+		jsonError(w, "failed to update photo", http.StatusInternalServerError)
+		return
+	}
+
+	// Also update taken_at if found (direct SQL since sqlc UpdatePhoto doesn't include it)
+	if exifTime != nil {
+		s.DB.ExecContext(ctx, "UPDATE photos SET taken_at = ? WHERE id = ?", exifTime, id)
+	}
+
+	updated, err := q.GetPhoto(ctx, id)
+	if err != nil {
+		jsonError(w, "failed to read updated photo", http.StatusInternalServerError)
+		return
+	}
+
+	found := exifLat != nil && exifLng != nil
+	type rescanResult struct {
+		dbgen.Photo
+		Found bool `json:"location_found"`
+	}
+	jsonOK(w, rescanResult{Photo: updated, Found: found})
 }
 
 // ---------------------------------------------------------------------------
