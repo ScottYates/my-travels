@@ -1581,7 +1581,7 @@ function initMap() {
     'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
   ).then(function(provider) {
     viewer.imageryLayers.addImageryProvider(provider);
-    // Add labels on top of satellite
+    // Labels: dark_only_labels has white text with dark halo (black outline)
     var labels = viewer.imageryLayers.addImageryProvider(
       new Cesium.UrlTemplateImageryProvider({
         url: 'https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}@2x.png',
@@ -1591,8 +1591,9 @@ function initMap() {
         credit: 'Labels © OpenStreetMap contributors © CARTO'
       })
     );
+    labels.brightness = 1.8;
+    labels.contrast = 1.5;
     labels.alpha = 1.0;
-    labels.brightness = 2.0;
   }).catch(function() {
     viewer.imageryLayers.addImageryProvider(
       new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
