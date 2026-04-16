@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+const clearPhotoStopIDs = `-- name: ClearPhotoStopIDs :exec
+UPDATE photos SET stop_id = NULL WHERE trip_id = ?
+`
+
+func (q *Queries) ClearPhotoStopIDs(ctx context.Context, tripID string) error {
+	_, err := q.db.ExecContext(ctx, clearPhotoStopIDs, tripID)
+	return err
+}
+
 const countPhotos = `-- name: CountPhotos :one
 SELECT COUNT(*) FROM photos WHERE trip_id = ?
 `
@@ -167,6 +176,15 @@ func (q *Queries) DeletePhoto(ctx context.Context, id string) error {
 	return err
 }
 
+const deletePhotosByTrip = `-- name: DeletePhotosByTrip :exec
+DELETE FROM photos WHERE trip_id = ?
+`
+
+func (q *Queries) DeletePhotosByTrip(ctx context.Context, tripID string) error {
+	_, err := q.db.ExecContext(ctx, deletePhotosByTrip, tripID)
+	return err
+}
+
 const deleteRoute = `-- name: DeleteRoute :exec
 DELETE FROM routes WHERE id = ?
 `
@@ -176,12 +194,30 @@ func (q *Queries) DeleteRoute(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteRoutesByTrip = `-- name: DeleteRoutesByTrip :exec
+DELETE FROM routes WHERE trip_id = ?
+`
+
+func (q *Queries) DeleteRoutesByTrip(ctx context.Context, tripID string) error {
+	_, err := q.db.ExecContext(ctx, deleteRoutesByTrip, tripID)
+	return err
+}
+
 const deleteStop = `-- name: DeleteStop :exec
 DELETE FROM stops WHERE id = ?
 `
 
 func (q *Queries) DeleteStop(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, deleteStop, id)
+	return err
+}
+
+const deleteStopsByTrip = `-- name: DeleteStopsByTrip :exec
+DELETE FROM stops WHERE trip_id = ?
+`
+
+func (q *Queries) DeleteStopsByTrip(ctx context.Context, tripID string) error {
+	_, err := q.db.ExecContext(ctx, deleteStopsByTrip, tripID)
 	return err
 }
 
@@ -376,6 +412,50 @@ func (q *Queries) ListPhotosByStop(ctx context.Context, stopID *string) ([]Photo
 	return items, nil
 }
 
+const listPhotosWithLocation = `-- name: ListPhotosWithLocation :many
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range FROM photos WHERE trip_id = ? AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY taken_at ASC, created_at ASC
+`
+
+func (q *Queries) ListPhotosWithLocation(ctx context.Context, tripID string) ([]Photo, error) {
+	rows, err := q.db.QueryContext(ctx, listPhotosWithLocation, tripID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Photo{}
+	for rows.Next() {
+		var i Photo
+		if err := rows.Scan(
+			&i.ID,
+			&i.TripID,
+			&i.StopID,
+			&i.Filename,
+			&i.OriginalName,
+			&i.Caption,
+			&i.Lat,
+			&i.Lng,
+			&i.TakenAt,
+			&i.Width,
+			&i.Height,
+			&i.SizeBytes,
+			&i.CreatedAt,
+			&i.CamHeading,
+			&i.CamPitch,
+			&i.CamRange,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRoutes = `-- name: ListRoutes :many
 SELECT id, trip_id, name, geojson, color, created_at FROM routes WHERE trip_id = ? ORDER BY created_at ASC
 `
@@ -495,6 +575,34 @@ func (q *Queries) MaxStopOrder(ctx context.Context, tripID string) (interface{},
 	var coalesce interface{}
 	err := row.Scan(&coalesce)
 	return coalesce, err
+}
+
+const resetTripDefaults = `-- name: ResetTripDefaults :exec
+UPDATE trips SET cover_photo_id = NULL, default_cam_heading = NULL, default_cam_pitch = NULL, default_cam_range = NULL, updated_at = ? WHERE id = ?
+`
+
+type ResetTripDefaultsParams struct {
+	UpdatedAt time.Time `json:"updated_at"`
+	ID        string    `json:"id"`
+}
+
+func (q *Queries) ResetTripDefaults(ctx context.Context, arg ResetTripDefaultsParams) error {
+	_, err := q.db.ExecContext(ctx, resetTripDefaults, arg.UpdatedAt, arg.ID)
+	return err
+}
+
+const setPhotoStopID = `-- name: SetPhotoStopID :exec
+UPDATE photos SET stop_id = ? WHERE id = ?
+`
+
+type SetPhotoStopIDParams struct {
+	StopID *string `json:"stop_id"`
+	ID     string  `json:"id"`
+}
+
+func (q *Queries) SetPhotoStopID(ctx context.Context, arg SetPhotoStopIDParams) error {
+	_, err := q.db.ExecContext(ctx, setPhotoStopID, arg.StopID, arg.ID)
+	return err
 }
 
 const updatePhoto = `-- name: UpdatePhoto :exec

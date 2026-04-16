@@ -70,3 +70,24 @@ SELECT COUNT(*) FROM photos WHERE trip_id = ?;
 
 -- name: MaxStopOrder :one
 SELECT COALESCE(MAX(stop_order), -1) FROM stops WHERE trip_id = ?;
+
+-- name: DeleteStopsByTrip :exec
+DELETE FROM stops WHERE trip_id = ?;
+
+-- name: DeletePhotosByTrip :exec
+DELETE FROM photos WHERE trip_id = ?;
+
+-- name: DeleteRoutesByTrip :exec
+DELETE FROM routes WHERE trip_id = ?;
+
+-- name: ResetTripDefaults :exec
+UPDATE trips SET cover_photo_id = NULL, default_cam_heading = NULL, default_cam_pitch = NULL, default_cam_range = NULL, updated_at = ? WHERE id = ?;
+
+-- name: SetPhotoStopID :exec
+UPDATE photos SET stop_id = ? WHERE id = ?;
+
+-- name: ClearPhotoStopIDs :exec
+UPDATE photos SET stop_id = NULL WHERE trip_id = ?;
+
+-- name: ListPhotosWithLocation :many
+SELECT * FROM photos WHERE trip_id = ? AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY taken_at ASC, created_at ASC;

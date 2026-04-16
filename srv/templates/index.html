@@ -633,6 +633,15 @@ textarea.form-input {
   margin-bottom: 12px;
 }
 
+.timeline-card .tc-count {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
 .timeline-photos {
   display: flex;
   gap: 6px;
@@ -1895,7 +1904,12 @@ function renderTripDetail() {
 
   // Trip info
   html += '<div style="margin-bottom:8px">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
   html += '<h2 style="font-size:20px;font-weight:700;margin-bottom:4px">' + escapeHtml(trip.title) + '</h2>';
+  if (photos.length > 0) {
+    html += '<button class="btn btn-danger btn-sm edit-only" id="resetTripBtn" style="white-space:nowrap;font-size:11px;padding:4px 10px" title="Delete all photos, stops, and routes">🗑 Start Over</button>';
+  }
+  html += '</div>';
   if (trip.description) {
     html += '<p style="font-size:13px;color:var(--text-muted);line-height:1.5">' + escapeHtml(trip.description) + '</p>';
   }
@@ -1989,6 +2003,24 @@ function renderTripDetail() {
 function wireDetailEvents() {
   const trip = state.currentTrip;
   if (!trip) return;
+
+  // Reset / Start Over button
+  const resetBtn = $('#resetTripBtn');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', async () => {
+      if (!confirm('Delete ALL photos, stops, and routes for this trip? This cannot be undone.')) return;
+      try {
+        const updated = await api('POST', '/api/trips/' + trip.id + '/reset');
+        state.currentTrip = updated;
+        renderTripDetail();
+        renderMapData();
+        renderTimeline();
+        toast('Trip data cleared — ready for new photos!');
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  }
 
   // Add stop button
   const addStopBtn = $('#addStopBtn');
@@ -2227,8 +2259,30 @@ function handleWorkerMessage(e) {
 
 function checkAllUploadsFinished() {
   if (activeUploads.size > 0) return;
-  setTimeout(() => {
-    reloadCurrentTrip();
+  setTimeout(async () => {
+    const trip = state.currentTrip;
+    if (trip) {
+      // Auto-cluster photos into stops for the timeline
+      try {
+        const updated = await api('POST', '/api/trips/' + trip.id + '/auto-stops');
+        state.currentTrip = updated;
+        renderTripDetail();
+        renderMapData();
+        renderTimeline();
+        fitMapToTrip();
+        const nStops = (updated.stops || []).length;
+        if (nStops > 0) {
+          toast(nStops + ' stop' + (nStops > 1 ? 's' : '') + ' created from photo locations');
+          // Switch to timeline tab to show the result
+          showView('timeline');
+        }
+      } catch (err) {
+        // Fallback: just reload
+        await reloadCurrentTrip();
+      }
+    } else {
+      await reloadCurrentTrip();
+    }
     setTimeout(() => {
       const q = $('#uploadQueue');
       if (q) q.innerHTML = '';
@@ -3126,7 +3180,11 @@ function renderTimeline() {
   const photos = trip.photos || [];
 
   if (stops.length === 0) {
-    timelineContent.innerHTML = '<div class="empty-state"><div class="empty-icon">📖</div><h3>No story yet</h3><p>Add stops to your trip to see them here as a timeline!</p></div>';
+    if (photos.length > 0) {
+      timelineContent.innerHTML = '<div class="empty-state"><div class="empty-icon">📖</div><h3>No stops yet</h3><p>Upload more photos or click "+ Add Stop" in the Details tab to organize your ' + photos.length + ' photo' + (photos.length > 1 ? 's' : '') + ' into a timeline.</p></div>';
+    } else {
+      timelineContent.innerHTML = '<div class="empty-state"><div class="empty-icon">📖</div><h3>No story yet</h3><p>Upload photos to automatically build your travel timeline!</p></div>';
+    }
     return;
   }
 
@@ -3151,10 +3209,11 @@ function renderTimeline() {
     if (stop.description) {
       html += '<div class="tc-desc">' + escapeHtml(stop.description) + '</div>';
     }
+    html += '<div class="tc-count">' + allPhotos.length + ' photo' + (allPhotos.length !== 1 ? 's' : '') + '</div>';
     if (allPhotos.length > 0) {
       html += '<div class="timeline-photos">';
       allPhotos.forEach(p => {
-        html += '<img src="/uploads/' + escapeHtml(p.filename) + '" alt="' + escapeHtml(p.caption || '') + '" loading="lazy">';
+        html += '<img src="/uploads/' + escapeHtml(p.filename) + '" alt="' + escapeHtml(p.caption || '') + '" loading="lazy" data-photo-id="' + escapeHtml(p.id) + '">';
       });
       html += '</div>';
     }
@@ -3164,9 +3223,11 @@ function renderTimeline() {
 
   timelineContent.innerHTML = html;
 
-  // Click to fly
+  // Click card header to fly
   $$('.timeline-card').forEach(card => {
-    card.addEventListener('click', () => {
+    card.addEventListener('click', (e) => {
+      // Don't fly if clicking a photo thumbnail
+      if (e.target.tagName === 'IMG' && e.target.dataset.photoId) return;
       const lat = parseFloat(card.dataset.lat);
       const lng = parseFloat(card.dataset.lng);
       if (!isNaN(lat) && !isNaN(lng)) {
@@ -3179,6 +3240,15 @@ function renderTimeline() {
           easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
         });
       }
+    });
+  });
+
+  // Click timeline photo to open modal
+  $$('.timeline-photos img[data-photo-id]').forEach(img => {
+    img.style.cursor = 'pointer';
+    img.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openPhotoModal(img.dataset.photoId);
     });
   });
 }

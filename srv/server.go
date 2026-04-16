@@ -13,10 +13,12 @@ import (
 	_ "image/png"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -132,6 +134,10 @@ func (s *Server) Serve(addr string) error {
 	// Route CRUD
 	mux.HandleFunc("POST /api/trips/{id}/routes", s.handleCreateRoute)
 	mux.HandleFunc("DELETE /api/routes/{id}", s.handleDeleteRoute)
+
+	// Trip reset & auto-stops
+	mux.HandleFunc("POST /api/trips/{id}/reset", s.handleResetTrip)
+	mux.HandleFunc("POST /api/trips/{id}/auto-stops", s.handleAutoStops)
 
 	slog.Info("starting server", "addr", addr)
 	return http.ListenAndServe(addr, mux)
@@ -832,6 +838,219 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
 	w.Write(buf.Bytes())
+}
+
+// ---------------------------------------------------------------------------
+// Reset trip (delete all data, keep trip shell)
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleResetTrip(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ctx := r.Context()
+	q := dbgen.New(s.DB)
+
+	trip, err := q.GetTrip(ctx, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "trip not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		return
+	}
+
+	// Delete photo files from disk
+	photos, _ := q.ListPhotos(ctx, trip.ID)
+	for _, p := range photos {
+		os.Remove(filepath.Join(s.UploadDir, p.Filename))
+		os.Remove(filepath.Join(s.UploadDir, "thumbs", p.Filename))
+	}
+
+	// Delete all child records
+	q.DeletePhotosByTrip(ctx, id)
+	q.DeleteStopsByTrip(ctx, id)
+	q.DeleteRoutesByTrip(ctx, id)
+
+	// Reset trip defaults
+	q.ResetTripDefaults(ctx, dbgen.ResetTripDefaultsParams{
+		UpdatedAt: time.Now(),
+		ID:        id,
+	})
+
+	// Return cleaned trip detail
+	updatedTrip, err := q.GetTrip(ctx, id)
+	if err != nil {
+		jsonError(w, "failed to read trip", http.StatusInternalServerError)
+		return
+	}
+	detail, err := s.buildTripDetail(r, updatedTrip)
+	if err != nil {
+		jsonError(w, "failed to build trip detail", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, detail)
+}
+
+// ---------------------------------------------------------------------------
+// Auto-create stops by clustering photos within 3 miles
+// ---------------------------------------------------------------------------
+
+const clusterRadiusMiles = 3.0
+const clusterRadiusMeters = clusterRadiusMiles * 1609.344
+
+// haversineMeters returns distance in meters between two lat/lng points.
+func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
+	const R = 6371000.0 // Earth radius in meters
+	dLat := (lat2 - lat1) * 3.141592653589793 / 180.0
+	dLng := (lng2 - lng1) * 3.141592653589793 / 180.0
+	la1 := lat1 * 3.141592653589793 / 180.0
+	la2 := lat2 * 3.141592653589793 / 180.0
+
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(la1)*math.Cos(la2)*math.Sin(dLng/2)*math.Sin(dLng/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return R * c
+}
+
+type photoCluster struct {
+	photos []dbgen.Photo
+	latSum float64
+	lngSum float64
+}
+
+func (c *photoCluster) centroidLat() float64 { return c.latSum / float64(len(c.photos)) }
+func (c *photoCluster) centroidLng() float64 { return c.lngSum / float64(len(c.photos)) }
+
+func (c *photoCluster) addPhoto(p dbgen.Photo) {
+	c.photos = append(c.photos, p)
+	c.latSum += *p.Lat
+	c.lngSum += *p.Lng
+}
+
+func (s *Server) handleAutoStops(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	ctx := r.Context()
+	q := dbgen.New(s.DB)
+
+	trip, err := q.GetTrip(ctx, id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "trip not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		return
+	}
+
+	// Remove existing stops and stop assignments
+	q.DeleteStopsByTrip(ctx, id)
+	q.ClearPhotoStopIDs(ctx, id)
+
+	// Get photos with location, sorted by taken_at
+	photos, err := q.ListPhotosWithLocation(ctx, id)
+	if err != nil {
+		jsonError(w, "failed to list photos", http.StatusInternalServerError)
+		return
+	}
+
+	if len(photos) == 0 {
+		detail, _ := s.buildTripDetail(r, trip)
+		jsonOK(w, detail)
+		return
+	}
+
+	// Cluster photos: assign each photo to nearest existing cluster (by centroid)
+	// within radius, or start a new cluster
+	var clusters []*photoCluster
+	for _, p := range photos {
+		plat, plng := *p.Lat, *p.Lng
+		bestIdx := -1
+		bestDist := clusterRadiusMeters + 1
+
+		for i, c := range clusters {
+			d := haversineMeters(plat, plng, c.centroidLat(), c.centroidLng())
+			if d < bestDist {
+				bestDist = d
+				bestIdx = i
+			}
+		}
+
+		if bestIdx >= 0 && bestDist <= clusterRadiusMeters {
+			clusters[bestIdx].addPhoto(p)
+		} else {
+			c := &photoCluster{}
+			c.addPhoto(p)
+			clusters = append(clusters, c)
+		}
+	}
+
+	// Sort clusters by earliest photo timestamp
+	sort.Slice(clusters, func(i, j int) bool {
+		var ti, tj time.Time
+		for _, p := range clusters[i].photos {
+			if p.TakenAt != nil {
+				ti = *p.TakenAt
+				break
+			}
+		}
+		for _, p := range clusters[j].photos {
+			if p.TakenAt != nil {
+				tj = *p.TakenAt
+				break
+			}
+		}
+		return ti.Before(tj)
+	})
+
+	now := time.Now()
+
+	// Create stops and assign photos
+	for order, c := range clusters {
+		stopID := uuid.New().String()
+
+		// Earliest taken_at in cluster
+		var arrivedAt *time.Time
+		for _, p := range c.photos {
+			if p.TakenAt != nil {
+				arrivedAt = p.TakenAt
+				break
+			}
+		}
+
+		title := fmt.Sprintf("Stop %d", order+1)
+
+		q.CreateStop(ctx, dbgen.CreateStopParams{
+			ID:        stopID,
+			TripID:    id,
+			Title:     title,
+			Lat:       c.centroidLat(),
+			Lng:       c.centroidLng(),
+			StopOrder: int64(order),
+			ArrivedAt: arrivedAt,
+			CreatedAt: now,
+		})
+
+		// Assign photos to this stop
+		for _, p := range c.photos {
+			q.SetPhotoStopID(ctx, dbgen.SetPhotoStopIDParams{
+				StopID: &stopID,
+				ID:     p.ID,
+			})
+		}
+	}
+
+	// Return updated trip detail
+	updatedTrip, err := q.GetTrip(ctx, id)
+	if err != nil {
+		jsonError(w, "failed to read trip", http.StatusInternalServerError)
+		return
+	}
+	detail, err := s.buildTripDetail(r, updatedTrip)
+	if err != nil {
+		jsonError(w, "failed to build trip detail", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, detail)
 }
 
 // ---------------------------------------------------------------------------
