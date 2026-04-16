@@ -1294,7 +1294,7 @@ body.readonly .edit-only { display: none !important; }
 // ---------------------------------------------------------------
 // State
 // ---------------------------------------------------------------
-const state = {
+const state = window._state = {
   trips: [],
   currentTrip: null,
   currentView: 'list',    // list | detail | timeline
@@ -1532,8 +1532,31 @@ function onCesiumClick(screenPos) {
 
   // Check if we clicked an entity (stop/photo)
   const picked = viewer.scene.pick(screenPos);
-  if (Cesium.defined(picked) && picked.id) {
-    const entity = picked.id;
+  let entity = Cesium.defined(picked) && picked.id ? picked.id : null;
+
+  // Fallback: if Cesium pick didn't resolve an entity id (can happen with
+  // dynamically-toggled billboards), find the nearest photo marker by screen distance
+  if (!entity && Cesium.defined(picked)) {
+    let bestDist = 30; // max 30px hit radius
+    let bestEntity = null;
+    const now = Cesium.JulianDate.now();
+    state.photoMarkers.forEach(m => {
+      const mPos = m.position.getValue(now);
+      if (!mPos) return;
+      const mScreen = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, mPos);
+      if (!mScreen) return;
+      const dx = mScreen.x - screenPos.x;
+      const dy = mScreen.y - screenPos.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestEntity = m;
+      }
+    });
+    if (bestEntity) entity = bestEntity;
+  }
+
+  if (entity) {
     if (entity._stopData) {
       showGlobePopup(entity._stopData.lng, entity._stopData.lat,
         '<strong>' + escapeHtml(entity._stopData.title) + '</strong>' +
@@ -1545,6 +1568,17 @@ function onCesiumClick(screenPos) {
         '<img src="/uploads/' + escapeHtml(p.filename) + '" alt="">' +
         (p.caption ? '<div class="popup-caption">' + escapeHtml(p.caption) + '</div>' : '') +
         '</div>', true);
+
+      // Highlight the corresponding sidebar thumbnail
+      state.focusedPhotoId = p.id;
+      $$('.photo-thumb').forEach(t => t.classList.remove('focused'));
+      const thumb = document.querySelector('.photo-thumb[data-photo-id="' + p.id + '"]');
+      if (thumb) {
+        thumb.classList.add('focused');
+        thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      highlightPhotoMarker(p.id);
+      updateCamToolbar();
     }
   } else {
     closeGlobePopup();
@@ -2680,7 +2714,7 @@ function renderMapData() {
   photos.forEach(photo => {
     if (photo.lat == null || photo.lng == null) return;
 
-    // Lightweight placeholder: a small blue dot (the point graphic) until the image loads
+    // Lightweight placeholder: a small blue dot until the thumbnail image loads
     const photoEntity = viewer.entities.add({
       position: Cesium.Cartesian3.fromDegrees(photo.lng, photo.lat, 15),
       point: {
@@ -2722,20 +2756,15 @@ function renderMapData() {
         ctx.restore();
         ctx.beginPath(); ctx.arc(32, 32, 29, 0, Math.PI * 2);
         ctx.lineWidth = 3; ctx.strokeStyle = 'white'; ctx.stroke();
-        if (entity.billboard) {
-          entity.billboard.image = canvas.toDataURL();
-        } else {
-          entity.billboard = new Cesium.BillboardGraphics({
-            image: canvas.toDataURL(),
-            width: 44,
-            height: 44,
-            verticalOrigin: Cesium.VerticalOrigin.CENTER,
-            heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          });
-          // Hide the placeholder dot once billboard is ready
-          if (entity.point) entity.point.show = false;
-        }
+        entity.billboard = new Cesium.BillboardGraphics({
+          image: canvas.toDataURL(),
+          width: 44,
+          height: 44,
+          verticalOrigin: Cesium.VerticalOrigin.CENTER,
+          heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        });
+        if (entity.point) entity.point.show = false;
         viewer.scene.requestRender();
         resolve();
       };
@@ -2851,7 +2880,9 @@ function getCameraHPR(lat, lng) {
   const transform = Cesium.Transforms.eastNorthUpToFixedFrame(targetCart);
   const invTransform = Cesium.Matrix4.inverseTransformation(transform, new Cesium.Matrix4());
   const localOffset = Cesium.Matrix4.multiplyByPoint(invTransform, camPos, new Cesium.Cartesian3());
-  const heading = Math.atan2(localOffset.x, localOffset.y);
+  // Cesium HeadingPitchRange heading = direction camera LOOKS (not where camera IS)
+  // So we negate the offset to get the look-toward-target direction
+  const heading = Math.atan2(-localOffset.x, -localOffset.y);
   const horizontalDist = Math.sqrt(localOffset.x * localOffset.x + localOffset.y * localOffset.y);
   const pitch = -Math.atan2(localOffset.z, horizontalDist);
   return {
