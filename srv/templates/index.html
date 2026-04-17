@@ -1280,6 +1280,209 @@ body.readonly .edit-only { display: none !important; }
   height: 100%;
   object-fit: cover;
 }
+
+/* ===== Presentation Mode ===== */
+#presentationOverlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  background: #000;
+  flex-direction: column;
+}
+#presentationOverlay.active {
+  display: flex;
+}
+
+/* Top bar */
+.pres-topbar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+  z-index: 10;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#presentationOverlay:hover .pres-topbar,
+#presentationOverlay.show-controls .pres-topbar {
+  opacity: 1;
+}
+.pres-topbar .pres-title {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pres-topbar .pres-counter {
+  color: rgba(255,255,255,0.7);
+  font-size: 13px;
+  margin-left: 16px;
+  flex-shrink: 0;
+}
+.pres-exit-btn {
+  background: rgba(255,255,255,0.15);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #fff;
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+.pres-exit-btn:hover {
+  background: rgba(255,255,255,0.3);
+}
+
+/* Main content area */
+.pres-content {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Photo slide */
+.pres-photo-slide {
+  display: none;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+}
+.pres-photo-slide.active {
+  display: flex;
+}
+.pres-photo-slide img {
+  max-width: 100%;
+  max-height: calc(100vh - 120px);
+  object-fit: contain;
+  border-radius: 4px;
+  user-select: none;
+  -webkit-user-drag: none;
+  animation: presFadeIn 0.4s ease;
+}
+@keyframes presFadeIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Globe transition slide */
+.pres-globe-slide {
+  display: none;
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+.pres-globe-slide.active {
+  display: flex;
+}
+.pres-globe-canvas {
+  width: 100%;
+  height: 100%;
+}
+.pres-globe-label {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #fff;
+  font-size: 28px;
+  font-weight: 700;
+  text-shadow: 0 2px 20px rgba(0,0,0,0.8);
+  text-align: center;
+  pointer-events: none;
+  z-index: 5;
+}
+.pres-globe-sublabel {
+  font-size: 16px;
+  font-weight: 400;
+  opacity: 0.8;
+  margin-top: 4px;
+}
+
+/* Bottom info bar */
+.pres-bottom {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  padding: 12px 24px 16px;
+  background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+#presentationOverlay:hover .pres-bottom,
+#presentationOverlay.show-controls .pres-bottom {
+  opacity: 1;
+}
+.pres-caption {
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.4;
+  max-width: 70%;
+}
+.pres-caption .pres-cap-text {
+  font-weight: 500;
+}
+.pres-caption .pres-cap-date {
+  font-size: 13px;
+  color: rgba(255,255,255,0.7);
+  margin-top: 2px;
+}
+.pres-caption .pres-cap-stop {
+  font-size: 12px;
+  color: rgba(255,255,255,0.5);
+  margin-top: 2px;
+}
+
+/* Nav buttons */
+.pres-nav {
+  display: flex;
+  gap: 8px;
+  pointer-events: auto;
+}
+.pres-nav button {
+  background: rgba(255,255,255,0.15);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #fff;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, transform 0.1s;
+}
+.pres-nav button:hover {
+  background: rgba(255,255,255,0.3);
+}
+.pres-nav button:active {
+  transform: scale(0.92);
+}
+.pres-nav button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Fullscreen adjustments */
+#presentationOverlay:-webkit-full-screen { display: flex; }
+#presentationOverlay:fullscreen { display: flex; }
 </style>
 </head>
 <body>
@@ -1450,6 +1653,25 @@ body.readonly .edit-only { display: none !important; }
     </div>
 
     <button class="mobile-toggle" id="mobileToggle">☰ Menu</button>
+  </div>
+</div>
+
+<!-- Presentation Mode Overlay -->
+<div id="presentationOverlay">
+  <div class="pres-topbar">
+    <div style="display:flex;align-items:center;overflow:hidden">
+      <span class="pres-title" id="presTitle"></span>
+      <span class="pres-counter" id="presCounter"></span>
+    </div>
+    <button class="pres-exit-btn" id="presExit">✕ Exit</button>
+  </div>
+  <div class="pres-content" id="presContent"></div>
+  <div class="pres-bottom" id="presBottom">
+    <div class="pres-caption" id="presCaption"></div>
+    <div class="pres-nav">
+      <button id="presPrev" title="Previous (←)">‹</button>
+      <button id="presNext" title="Next (→)">›</button>
+    </div>
   </div>
 </div>
 
@@ -3346,9 +3568,14 @@ function renderTripDetail() {
   html += '<div style="margin-bottom:8px">';
   html += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
   html += '<h2 style="font-size:20px;font-weight:700;margin-bottom:4px">' + escapeHtml(trip.title) + '</h2>';
+  html += '<div style="display:flex;gap:6px;flex-shrink:0">';
+  if (photos.length > 0 && stops.length > 0) {
+    html += '<button class="btn btn-sm" id="presentBtn" style="white-space:nowrap;font-size:11px;padding:4px 10px;background:var(--accent);color:#fff" title="Full-screen photo presentation">▶ Present</button>';
+  }
   if (photos.length > 0) {
     html += '<button class="btn btn-danger btn-sm edit-only" id="resetTripBtn" style="white-space:nowrap;font-size:11px;padding:4px 10px" title="Delete all photos, stops, and routes">🗑 Start Over</button>';
   }
+  html += '</div>';
   html += '</div>';
   if (trip.description) {
     html += '<p style="font-size:13px;color:var(--text-muted);line-height:1.5">' + escapeHtml(trip.description) + '</p>';
@@ -3485,6 +3712,12 @@ function renderTripDetail() {
 function wireDetailEvents() {
   const trip = state.currentTrip;
   if (!trip) return;
+
+  // Present button
+  const presentBtn = $('#presentBtn');
+  if (presentBtn) {
+    presentBtn.addEventListener('click', () => startPresentation());
+  }
 
   // Reset / Start Over button
   const resetBtn = $('#resetTripBtn');
@@ -5176,6 +5409,329 @@ document.addEventListener('keydown', (e) => {
     }
   }
 });
+
+// ---------------------------------------------------------------
+// Presentation Mode
+// ---------------------------------------------------------------
+const presOverlay = $('#presentationOverlay');
+const presContent = $('#presContent');
+const presTitle = $('#presTitle');
+const presCounter = $('#presCounter');
+const presCaption = $('#presCaption');
+const presBottom = $('#presBottom');
+const presPrev = $('#presPrev');
+const presNext = $('#presNext');
+
+let presSlides = [];   // array of { type: 'photo'|'globe', photo?, stop?, stopTitle?, location?, date? }
+let presIndex = 0;
+let presGlobeViewer = null;
+let presActive = false;
+
+function buildPresentationSlides() {
+  const trip = state.currentTrip;
+  if (!trip) return [];
+  const stops = (trip.stops || []).slice().sort((a, b) => a.stop_order - b.stop_order);
+  const photos = (trip.photos || []).slice();
+  const slides = [];
+
+  stops.forEach((stop, si) => {
+    // Find photos for this stop
+    const stopPhotos = photos.filter(p => p.stop_id === stop.id);
+    // Also nearby unassigned photos
+    const nearbyPhotos = photos.filter(p => {
+      if (p.stop_id) return false;
+      if (p.lat == null || p.lng == null) return false;
+      const dx = (p.lng - stop.lng) * Math.cos(stop.lat * Math.PI / 180) * 111320;
+      const dy = (p.lat - stop.lat) * 111320;
+      return Math.sqrt(dx * dx + dy * dy) < 500;
+    });
+    const allPhotos = stopPhotos.concat(nearbyPhotos).sort((a, b) => {
+      const ta = a.taken_at || a.created_at || '';
+      const tb = b.taken_at || b.created_at || '';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
+
+    if (allPhotos.length === 0) return;
+
+    // Globe transition slide for this stop
+    slides.push({
+      type: 'globe',
+      stop: stop,
+      stopTitle: stop.title || ('Stop ' + (si + 1)),
+      location: stop.location_name || '',
+      date: stop.arrived_at ? formatPresDate(stop.arrived_at) : '',
+    });
+
+    // Photo slides
+    allPhotos.forEach(p => {
+      slides.push({
+        type: 'photo',
+        photo: p,
+        stop: stop,
+        stopTitle: stop.title || ('Stop ' + (si + 1)),
+        location: stop.location_name || '',
+        caption: p.caption || '',
+        date: p.taken_at ? formatPresDateTime(p.taken_at) : '',
+      });
+    });
+  });
+
+  return slides;
+}
+
+function formatPresDate(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+}
+
+function formatPresDateTime(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })
+    + ' \u2022 ' + dt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+function startPresentation() {
+  const slides = buildPresentationSlides();
+  if (slides.length === 0) {
+    toast('No photos to present', 'error');
+    return;
+  }
+  presSlides = slides;
+  presIndex = 0;
+  presActive = true;
+  presTitle.textContent = state.currentTrip.title || 'Presentation';
+  presOverlay.classList.add('active');
+
+  // Request fullscreen
+  const el = presOverlay;
+  if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+  else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+
+  // Show controls briefly
+  presOverlay.classList.add('show-controls');
+  setTimeout(() => presOverlay.classList.remove('show-controls'), 2000);
+
+  showPresSlide(0);
+}
+
+function stopPresentation() {
+  presActive = false;
+  presOverlay.classList.remove('active');
+  presContent.innerHTML = '';
+
+  // Destroy presentation globe viewer
+  if (presGlobeViewer) {
+    try { presGlobeViewer.destroy(); } catch(e) {}
+    presGlobeViewer = null;
+  }
+
+  // Exit fullscreen
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+  }
+}
+
+function showPresSlide(idx) {
+  if (idx < 0 || idx >= presSlides.length) return;
+  presIndex = idx;
+  const slide = presSlides[idx];
+
+  // Update counter
+  presCounter.textContent = (idx + 1) + ' / ' + presSlides.length;
+
+  // Update nav buttons
+  presPrev.disabled = idx === 0;
+  presNext.disabled = idx === presSlides.length - 1;
+
+  if (slide.type === 'globe') {
+    showPresGlobe(slide);
+  } else {
+    showPresPhoto(slide);
+  }
+}
+
+function showPresPhoto(slide) {
+  // Destroy globe viewer when switching to photo
+  if (presGlobeViewer) {
+    try { presGlobeViewer.destroy(); } catch(e) {}
+    presGlobeViewer = null;
+  }
+  presContent.innerHTML = '';
+  const container = document.createElement('div');
+  container.className = 'pres-photo-slide active';
+  const img = document.createElement('img');
+  img.src = '/uploads/' + slide.photo.filename;
+  img.alt = slide.caption || '';
+  img.draggable = false;
+  container.appendChild(img);
+  presContent.appendChild(container);
+
+  // Caption / date / stop
+  let capHtml = '';
+  if (slide.caption) capHtml += '<div class="pres-cap-text">' + escapeHtml(slide.caption) + '</div>';
+  if (slide.date) capHtml += '<div class="pres-cap-date">' + escapeHtml(slide.date) + '</div>';
+  capHtml += '<div class="pres-cap-stop">' + escapeHtml(slide.stopTitle);
+  if (slide.location) capHtml += ' \u2022 ' + escapeHtml(slide.location);
+  capHtml += '</div>';
+  presCaption.innerHTML = capHtml;
+  presBottom.style.display = '';
+}
+
+function showPresGlobe(slide) {
+  presContent.innerHTML = '';
+  const container = document.createElement('div');
+  container.className = 'pres-globe-slide active';
+
+  const globeDiv = document.createElement('div');
+  globeDiv.className = 'pres-globe-canvas';
+  globeDiv.id = 'presGlobeContainer';
+  container.appendChild(globeDiv);
+
+  // Label overlay
+  const label = document.createElement('div');
+  label.className = 'pres-globe-label';
+  label.innerHTML = escapeHtml(slide.stopTitle)
+    + (slide.location ? '<div class="pres-globe-sublabel">' + escapeHtml(slide.location) + '</div>' : '')
+    + (slide.date ? '<div class="pres-globe-sublabel">' + escapeHtml(slide.date) + '</div>' : '');
+  container.appendChild(label);
+
+  presContent.appendChild(container);
+
+  // Caption for globe
+  presCaption.innerHTML = '';
+  presBottom.style.display = '';
+
+  // Create or reuse a Cesium viewer for the presentation
+  initPresGlobe(globeDiv, slide.stop);
+}
+
+function initPresGlobe(containerEl, stop) {
+  // Destroy old if exists
+  if (presGlobeViewer) {
+    try { presGlobeViewer.destroy(); } catch(e) {}
+    presGlobeViewer = null;
+  }
+
+  Cesium.Ion.defaultAccessToken = '';
+  presGlobeViewer = new Cesium.Viewer(containerEl, {
+    baseLayer: false,
+    baseLayerPicker: false,
+    geocoder: false,
+    homeButton: false,
+    sceneModePicker: false,
+    selectionIndicator: false,
+    navigationHelpButton: false,
+    animation: false,
+    timeline: false,
+    fullscreenButton: false,
+    vrButton: false,
+    infoBox: false,
+    creditContainer: document.createElement('div'),
+    skyAtmosphere: new Cesium.SkyAtmosphere(),
+    requestRenderMode: false,
+    scene3DOnly: true,
+  });
+
+  // Match main globe imagery: ESRI satellite
+  Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+  ).then(function(provider) {
+    presGlobeViewer.imageryLayers.addImageryProvider(provider);
+  }).catch(function() {
+    presGlobeViewer.imageryLayers.addImageryProvider(
+      new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
+    );
+  });
+
+  presGlobeViewer.scene.postProcessStages.fxaa.enabled = false;
+  presGlobeViewer.scene.globe.enableLighting = false;
+  presGlobeViewer.scene.globe.depthTestAgainstTerrain = false;
+
+  // Disable user interaction for a clean presentation
+  const ctrl = presGlobeViewer.scene.screenSpaceCameraController;
+  ctrl.enableRotate = false;
+  ctrl.enableZoom = false;
+  ctrl.enableTranslate = false;
+  ctrl.enableTilt = false;
+  ctrl.enableLook = false;
+
+  // Add marker for the stop
+  presGlobeViewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat),
+    billboard: {
+      image: buildStopIcon(stop.stop_order + 1),
+      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+      scale: 1.0,
+      disableDepthTestDistance: 100000,
+    },
+  });
+
+  // Compute destination
+  let dest, heading, pitch;
+  if (stop.cam_lng != null && stop.cam_lat != null && stop.cam_height != null) {
+    dest = Cesium.Cartesian3.fromDegrees(stop.cam_lng, stop.cam_lat, stop.cam_height);
+    heading = stop.cam_heading != null ? stop.cam_heading : 0;
+    pitch = stop.cam_pitch != null ? stop.cam_pitch : Cesium.Math.toRadians(-45);
+  } else {
+    const camHeight = 12000;
+    const latOffset = camHeight / 111320;
+    dest = Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat - latOffset, camHeight);
+    heading = 0;
+    pitch = Cesium.Math.toRadians(-45);
+  }
+
+  // Start from a wide view and fly in
+  presGlobeViewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat, 8000000),
+    orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+  });
+
+  presGlobeViewer.camera.flyTo({
+    destination: dest,
+    orientation: { heading: heading, pitch: pitch, roll: 0 },
+    duration: 3.0,
+    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+  });
+}
+
+// Build stop marker icon (reuse from main code)
+function buildStopIcon(num) {
+  const c = document.createElement('canvas');
+  c.width = 48; c.height = 48;
+  const ctx = c.getContext('2d');
+  // Orange circle
+  ctx.beginPath();
+  ctx.arc(24, 24, 18, 0, Math.PI * 2);
+  ctx.fillStyle = '#f59e0b';
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  // Number
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(String(num), 24, 25);
+  return c.toDataURL();
+}
+
+// Event handlers
+$('#presExit').addEventListener('click', stopPresentation);
+$('#presPrev').addEventListener('click', () => showPresSlide(presIndex - 1));
+$('#presNext').addEventListener('click', () => showPresSlide(presIndex + 1));
+
+// Keyboard navigation
+document.addEventListener('keydown', (e) => {
+  if (!presActive) return;
+  if (e.key === 'Escape') { stopPresentation(); e.preventDefault(); }
+  else if (e.key === 'ArrowRight' || e.key === ' ') { showPresSlide(presIndex + 1); e.preventDefault(); }
+  else if (e.key === 'ArrowLeft') { showPresSlide(presIndex - 1); e.preventDefault(); }
+});
+
+// When exiting fullscreen, just keep presentation running (non-fullscreen is fine)
 
 // ---------------------------------------------------------------
 // Init
