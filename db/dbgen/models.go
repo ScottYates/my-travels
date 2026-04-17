@@ -8,6 +8,15 @@ import (
 	"time"
 )
 
+type Comment struct {
+	ID        string    `json:"id"`
+	PhotoID   string    `json:"photo_id"`
+	TripID    string    `json:"trip_id"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Migration struct {
 	MigrationNumber int64     `json:"migration_number"`
 	MigrationName   string    `json:"migration_name"`

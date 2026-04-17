@@ -101,6 +101,7 @@ func (s *Server) Serve(addr string) error {
 	// SPA routes
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /share/{shareID}", s.handleIndex)
+	mux.HandleFunc("GET /present/{shareID}", s.handleIndex)
 
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
@@ -134,6 +135,13 @@ func (s *Server) Serve(addr string) error {
 	// Route CRUD
 	mux.HandleFunc("POST /api/trips/{id}/routes", s.handleCreateRoute)
 	mux.HandleFunc("DELETE /api/routes/{id}", s.handleDeleteRoute)
+
+	// Comment CRUD
+	mux.HandleFunc("GET /api/trips/{id}/comments", s.handleListCommentsByTrip)
+	mux.HandleFunc("GET /api/share/{shareID}/comments", s.handleListCommentsByShare)
+	mux.HandleFunc("POST /api/share/{shareID}/photos/{photoID}/comments", s.handleCreateCommentByShare)
+	mux.HandleFunc("POST /api/photos/{photoID}/comments", s.handleCreateComment)
+	mux.HandleFunc("DELETE /api/comments/{id}", s.handleDeleteComment)
 
 	// Photo rescan EXIF
 	mux.HandleFunc("POST /api/photos/{id}/rescan", s.handleRescanPhoto)
@@ -170,9 +178,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 type tripDetail struct {
 	dbgen.Trip
-	Stops  []dbgen.Stop  `json:"stops"`
-	Photos []dbgen.Photo `json:"photos"`
-	Routes []dbgen.Route `json:"routes"`
+	Stops    []dbgen.Stop    `json:"stops"`
+	Photos   []dbgen.Photo   `json:"photos"`
+	Routes   []dbgen.Route   `json:"routes"`
+	Comments []dbgen.Comment `json:"comments"`
 }
 
 func (s *Server) buildTripDetail(r *http.Request, trip dbgen.Trip) (*tripDetail, error) {
@@ -191,12 +200,17 @@ func (s *Server) buildTripDetail(r *http.Request, trip dbgen.Trip) (*tripDetail,
 	if err != nil {
 		return nil, fmt.Errorf("list routes: %w", err)
 	}
+	comments, err := q.ListCommentsByTrip(ctx, trip.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list comments: %w", err)
+	}
 
 	return &tripDetail{
-		Trip:   trip,
-		Stops:  stops,
-		Photos: photos,
-		Routes: routes,
+		Trip:     trip,
+		Stops:    stops,
+		Photos:   photos,
+		Routes:   routes,
+		Comments: comments,
 	}, nil
 }
 
@@ -1232,6 +1246,174 @@ func (s *Server) handleAutoStops(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, detail)
+}
+
+// ---------------------------------------------------------------------------
+// Comments
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleListCommentsByTrip(w http.ResponseWriter, r *http.Request) {
+	tripID := r.PathValue("id")
+	q := dbgen.New(s.DB)
+
+	if _, err := q.GetTrip(r.Context(), tripID); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "trip not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		return
+	}
+
+	comments, err := q.ListCommentsByTrip(r.Context(), tripID)
+	if err != nil {
+		jsonError(w, "failed to list comments", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, comments)
+}
+
+func (s *Server) handleListCommentsByShare(w http.ResponseWriter, r *http.Request) {
+	shareID := r.PathValue("shareID")
+	q := dbgen.New(s.DB)
+
+	trip, err := q.GetTripByShareID(r.Context(), shareID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "trip not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		return
+	}
+
+	comments, err := q.ListCommentsByTrip(r.Context(), trip.ID)
+	if err != nil {
+		jsonError(w, "failed to list comments", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, comments)
+}
+
+func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
+	photoID := r.PathValue("photoID")
+	ctx := r.Context()
+	q := dbgen.New(s.DB)
+
+	photo, err := q.GetPhoto(ctx, photoID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "photo not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get photo", http.StatusInternalServerError)
+		return
+	}
+
+	s.createComment(w, r, photo.TripID, photoID)
+}
+
+func (s *Server) handleCreateCommentByShare(w http.ResponseWriter, r *http.Request) {
+	shareID := r.PathValue("shareID")
+	photoID := r.PathValue("photoID")
+	ctx := r.Context()
+	q := dbgen.New(s.DB)
+
+	trip, err := q.GetTripByShareID(ctx, shareID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "trip not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify the photo belongs to this trip
+	photo, err := q.GetPhoto(ctx, photoID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "photo not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get photo", http.StatusInternalServerError)
+		return
+	}
+	if photo.TripID != trip.ID {
+		jsonError(w, "photo does not belong to this trip", http.StatusBadRequest)
+		return
+	}
+
+	s.createComment(w, r, trip.ID, photoID)
+}
+
+func (s *Server) createComment(w http.ResponseWriter, r *http.Request, tripID, photoID string) {
+	var body struct {
+		Author string `json:"author"`
+		Body   string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate body is not empty
+	body.Body = strings.TrimSpace(body.Body)
+	if body.Body == "" {
+		jsonError(w, "body is required", http.StatusBadRequest)
+		return
+	}
+
+	// Default author to Anonymous if empty
+	body.Author = strings.TrimSpace(body.Author)
+	if body.Author == "" {
+		body.Author = "Anonymous"
+	}
+
+	// Limit lengths
+	if len(body.Author) > 50 {
+		body.Author = body.Author[:50]
+	}
+	if len(body.Body) > 500 {
+		body.Body = body.Body[:500]
+	}
+
+	id := uuid.New().String()
+	now := time.Now()
+
+	q := dbgen.New(s.DB)
+	if err := q.CreateComment(r.Context(), dbgen.CreateCommentParams{
+		ID:        id,
+		PhotoID:   photoID,
+		TripID:    tripID,
+		Author:    body.Author,
+		Body:      body.Body,
+		CreatedAt: now,
+	}); err != nil {
+		jsonError(w, "failed to create comment", http.StatusInternalServerError)
+		return
+	}
+
+	comment := dbgen.Comment{
+		ID:        id,
+		PhotoID:   photoID,
+		TripID:    tripID,
+		Author:    body.Author,
+		Body:      body.Body,
+		CreatedAt: now,
+	}
+	jsonCreated(w, comment)
+}
+
+func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	q := dbgen.New(s.DB)
+
+	if err := q.DeleteComment(r.Context(), id); err != nil {
+		jsonError(w, "failed to delete comment", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------------------------------------------------------------------------

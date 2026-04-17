@@ -1480,25 +1480,26 @@ body.readonly .edit-only { display: none !important; }
   cursor: default;
 }
 
-/* Mini globe overlay on photo slides */
-.pres-mini-globe {
+/* Persistent mini globe overlay */
+.pres-mini-globe-wrap {
   position: absolute;
-  top: 16px;
+  top: 56px;
   right: 16px;
-  width: 160px;
-  height: 160px;
+  z-index: 15;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: opacity 0.4s;
+}
+.pres-mini-globe-wrap.hidden { opacity: 0; pointer-events: none; }
+.pres-mini-globe {
+  width: 150px;
+  height: 150px;
   border-radius: 50%;
   overflow: hidden;
   border: 2px solid rgba(255,255,255,0.5);
   box-shadow: 0 4px 20px rgba(0,0,0,0.6);
-  z-index: 15;
-  pointer-events: none;
-  opacity: 0;
-  animation: miniGlobeFadeIn 0.6s ease 0.3s forwards;
-}
-@keyframes miniGlobeFadeIn {
-  from { opacity: 0; transform: scale(0.8); }
-  to { opacity: 1; transform: scale(1); }
 }
 .pres-mini-globe .cesium-viewer,
 .pres-mini-globe .cesium-viewer-cesiumWidgetContainer,
@@ -1508,10 +1509,93 @@ body.readonly .edit-only { display: none !important; }
   height: 100% !important;
   border-radius: 50%;
 }
-/* Hide any credit/toolbar inside mini globe */
 .pres-mini-globe .cesium-viewer-toolbar,
 .pres-mini-globe .cesium-viewer-bottom {
   display: none !important;
+}
+.pres-mini-label {
+  color: rgba(255,255,255,0.85);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  margin-top: 6px;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.8);
+  max-width: 170px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Comments panel in presentation */
+.pres-comments {
+  position: absolute;
+  bottom: 80px;
+  right: 16px;
+  width: 280px;
+  max-height: 240px;
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+}
+.pres-comments-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.3) transparent;
+}
+.pres-comment {
+  background: rgba(0,0,0,0.55);
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.4;
+  backdrop-filter: blur(6px);
+}
+.pres-comment-author {
+  font-weight: 700;
+  font-size: 11px;
+  color: #f59e0b;
+  margin-bottom: 2px;
+}
+.pres-comment-body {
+  color: rgba(255,255,255,0.9);
+}
+.pres-comment-time {
+  color: rgba(255,255,255,0.4);
+  font-size: 10px;
+  margin-top: 2px;
+}
+.pres-comment-form {
+  display: flex;
+  gap: 4px;
+}
+.pres-comment-form input {
+  flex: 1;
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.25);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #fff;
+  font-size: 12px;
+  outline: none;
+}
+.pres-comment-form input::placeholder { color: rgba(255,255,255,0.4); }
+.pres-comment-form input:focus { border-color: rgba(255,255,255,0.5); }
+.pres-comment-form button {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 /* Fullscreen adjustments */
@@ -1657,6 +1741,13 @@ body.readonly .edit-only { display: none !important; }
         <input type="text" id="shareUrl" readonly>
         <button class="btn btn-secondary btn-sm" id="copyShareBtn">Copy</button>
       </div>
+      <div style="margin-top:8px">
+        <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Presentation Link</div>
+        <div class="share-url-row">
+          <input type="text" id="presentShareUrl" readonly>
+          <button class="btn btn-secondary btn-sm" id="copyPresentBtn">Copy</button>
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -1700,6 +1791,19 @@ body.readonly .edit-only { display: none !important; }
     <button class="pres-exit-btn" id="presExit">✕ Exit</button>
   </div>
   <div class="pres-content" id="presContent"></div>
+  <!-- Persistent mini globe -->
+  <div class="pres-mini-globe-wrap hidden" id="presMiniGlobeWrap">
+    <div class="pres-mini-globe" id="presMiniGlobeEl"></div>
+    <div class="pres-mini-label" id="presMiniLabel"></div>
+  </div>
+  <!-- Comments panel -->
+  <div class="pres-comments" id="presCommentsPanel" style="display:none">
+    <div class="pres-comments-list" id="presCommentsList"></div>
+    <div class="pres-comment-form" id="presCommentForm">
+      <input type="text" id="presCommentInput" placeholder="Add a comment…" maxlength="500">
+      <button id="presCommentSend">Send</button>
+    </div>
+  </div>
   <div class="pres-bottom" id="presBottom">
     <div class="pres-caption" id="presCaption"></div>
     <div class="pres-nav">
@@ -1723,6 +1827,7 @@ const state = window._state = {
   currentTab: 'detail',   // detail | timeline
   readOnly: false,
   shareID: null,
+  presentOnly: false,
   drawMode: false,
   drawPoints: [],
   geotagMode: false,
@@ -1735,12 +1840,18 @@ const state = window._state = {
 };
 
 // ---------------------------------------------------------------
-// Detect share mode from URL
+// Detect share mode and presentation-only mode from URL
 // ---------------------------------------------------------------
 const pathParts = window.location.pathname.split('/');
 if (pathParts[1] === 'share' && pathParts[2]) {
   state.readOnly = true;
   state.shareID = pathParts[2];
+  document.body.classList.add('readonly');
+}
+if (pathParts[1] === 'present' && pathParts[2]) {
+  state.readOnly = true;
+  state.shareID = pathParts[2];
+  state.presentOnly = true;
   document.body.classList.add('readonly');
 }
 
@@ -3549,6 +3660,8 @@ async function loadTrip(id) {
     state.currentTrip = trip;
     $('#breadcrumb').textContent = trip.title;
     shareUrl.value = window.location.origin + '/share/' + trip.share_id;
+    const presentShareUrlEl = $('#presentShareUrl');
+    if (presentShareUrlEl) presentShareUrlEl.value = window.location.origin + '/present/' + trip.share_id;
     showView('detail');
     renderTripDetail();
     renderMapData();
@@ -3571,6 +3684,10 @@ async function loadSharedTrip(shareId) {
     showView('detail');
     renderTripDetail();
     renderMapData();
+    // Auto-start presentation in present-only mode
+    if (state.presentOnly) {
+      setTimeout(() => startPresentation(), 500);
+    }
   } catch (err) {
     toast('Trip not found', 'error');
   }
@@ -5408,6 +5525,17 @@ $('#copyShareBtn').addEventListener('click', () => {
   });
 });
 
+$('#copyPresentBtn').addEventListener('click', () => {
+  const el = $('#presentShareUrl');
+  el.select();
+  navigator.clipboard.writeText(el.value).then(() => {
+    toast('Presentation link copied!');
+  }).catch(() => {
+    document.execCommand('copy');
+    toast('Presentation link copied!');
+  });
+});
+
 // ---------------------------------------------------------------
 // Keyboard shortcuts
 // ---------------------------------------------------------------
@@ -5455,13 +5583,20 @@ const presCaption = $('#presCaption');
 const presBottom = $('#presBottom');
 const presPrev = $('#presPrev');
 const presNext = $('#presNext');
+const presMiniGlobeWrap = $('#presMiniGlobeWrap');
+const presMiniGlobeEl = $('#presMiniGlobeEl');
+const presMiniLabel = $('#presMiniLabel');
+const presCommentsPanel = $('#presCommentsPanel');
+const presCommentsList = $('#presCommentsList');
+const presCommentInput = $('#presCommentInput');
 
-let presSlides = [];   // array of { type: 'photo'|'globe', photo?, stop?, stopTitle?, location?, date? }
+let presSlides = [];
 let presIndex = 0;
 let presGlobeViewer = null;
 let presMiniGlobeViewer = null;
+let presMiniSpinRAF = null;
 let presActive = false;
-const presImageCache = new Map(); // filename -> Image element
+const presImageCache = new Map();
 
 function buildPresentationSlides() {
   const trip = state.currentTrip;
@@ -5471,9 +5606,7 @@ function buildPresentationSlides() {
   const slides = [];
 
   stops.forEach((stop, si) => {
-    // Find photos for this stop
     const stopPhotos = photos.filter(p => p.stop_id === stop.id);
-    // Also nearby unassigned photos
     const nearbyPhotos = photos.filter(p => {
       if (p.stop_id) return false;
       if (p.lat == null || p.lng == null) return false;
@@ -5489,7 +5622,6 @@ function buildPresentationSlides() {
 
     if (allPhotos.length === 0) return;
 
-    // Globe transition slide for this stop
     slides.push({
       type: 'globe',
       stop: stop,
@@ -5498,7 +5630,6 @@ function buildPresentationSlides() {
       date: stop.arrived_at ? formatPresDate(stop.arrived_at) : '',
     });
 
-    // Photo slides
     allPhotos.forEach(p => {
       slides.push({
         type: 'photo',
@@ -5549,6 +5680,9 @@ function startPresentation() {
   presOverlay.classList.add('show-controls');
   setTimeout(() => presOverlay.classList.remove('show-controls'), 2000);
 
+  // Initialize the persistent mini globe
+  initPresMiniGlobe();
+
   showPresSlide(0);
 }
 
@@ -5557,26 +5691,23 @@ function stopPresentation() {
   presOverlay.classList.remove('active');
   presContent.innerHTML = '';
 
-  // Destroy presentation globe viewer
   if (presGlobeViewer) {
     try { presGlobeViewer.destroy(); } catch(e) {}
     presGlobeViewer = null;
   }
 
-  // Destroy mini globe
   destroyPresMiniGlobe();
-
-  // Clear pre-cache
   presImageCache.clear();
+  presCommentsPanel.style.display = 'none';
 
-  // Exit fullscreen
   if (document.fullscreenElement || document.webkitFullscreenElement) {
     (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
   }
+
+  // In present-only mode, redirect doesn't make sense; just close overlay
 }
 
 function presCacheAhead(fromIdx) {
-  // Pre-cache the next 2 photo slides after fromIdx
   let cached = 0;
   for (let i = fromIdx + 1; i < presSlides.length && cached < 2; i++) {
     const s = presSlides[i];
@@ -5594,10 +5725,7 @@ function showPresSlide(idx) {
   presIndex = idx;
   const slide = presSlides[idx];
 
-  // Update counter
   presCounter.textContent = (idx + 1) + ' / ' + presSlides.length;
-
-  // Update nav buttons
   presPrev.disabled = idx === 0;
   presNext.disabled = idx === presSlides.length - 1;
 
@@ -5607,24 +5735,24 @@ function showPresSlide(idx) {
     showPresPhoto(slide);
   }
 
-  // Pre-cache upcoming photo images
+  // Update mini globe for any slide that has a location
+  const loc = getSlideLocation(slide);
+  const locName = slide.location || slide.stopTitle || '';
+  updatePresMiniGlobe(loc, locName);
+
   presCacheAhead(idx);
 }
 
 function showPresPhoto(slide) {
-  // Destroy globe viewer when switching to photo
   if (presGlobeViewer) {
     try { presGlobeViewer.destroy(); } catch(e) {}
     presGlobeViewer = null;
   }
-  // Destroy previous mini globe
-  destroyPresMiniGlobe();
 
   presContent.innerHTML = '';
   const container = document.createElement('div');
   container.className = 'pres-photo-slide active';
 
-  // Use pre-cached image if available
   const img = document.createElement('img');
   const cached = presImageCache.get(slide.photo.filename);
   if (cached && cached.complete && cached.naturalWidth > 0) {
@@ -5637,13 +5765,7 @@ function showPresPhoto(slide) {
   container.appendChild(img);
   presContent.appendChild(container);
 
-  // Mini globe overlay showing photo/stop location
-  const loc = getSlideLocation(slide);
-  if (loc) {
-    initPresMiniGlobe(container, loc.lng, loc.lat);
-  }
-
-  // Caption / date / stop
+  // Caption
   let capHtml = '';
   if (slide.caption) capHtml += '<div class="pres-cap-text">' + escapeHtml(slide.caption) + '</div>';
   if (slide.date) capHtml += '<div class="pres-cap-date">' + escapeHtml(slide.date) + '</div>';
@@ -5652,10 +5774,12 @@ function showPresPhoto(slide) {
   capHtml += '</div>';
   presCaption.innerHTML = capHtml;
   presBottom.style.display = '';
+
+  // Show comments for this photo
+  renderPresComments(slide.photo.id);
 }
 
 function getSlideLocation(slide) {
-  // Prefer photo coordinates, fall back to stop coordinates
   if (slide.photo && slide.photo.lat != null && slide.photo.lng != null) {
     return { lat: slide.photo.lat, lng: slide.photo.lng };
   }
@@ -5665,24 +5789,13 @@ function getSlideLocation(slide) {
   return null;
 }
 
-function destroyPresMiniGlobe() {
-  if (presMiniGlobeViewer) {
-    try { presMiniGlobeViewer.destroy(); } catch(e) {}
-    presMiniGlobeViewer = null;
-  }
-}
-
-function initPresMiniGlobe(parentEl, lng, lat) {
-  const wrapper = document.createElement('div');
-  wrapper.className = 'pres-mini-globe';
-  const globeDiv = document.createElement('div');
-  globeDiv.style.width = '100%';
-  globeDiv.style.height = '100%';
-  wrapper.appendChild(globeDiv);
-  parentEl.appendChild(wrapper);
+// ---- Persistent mini globe ----
+function initPresMiniGlobe() {
+  destroyPresMiniGlobe();
+  presMiniGlobeWrap.classList.remove('hidden');
 
   Cesium.Ion.defaultAccessToken = '';
-  presMiniGlobeViewer = new Cesium.Viewer(globeDiv, {
+  presMiniGlobeViewer = new Cesium.Viewer(presMiniGlobeEl, {
     baseLayer: false,
     baseLayerPicker: false,
     geocoder: false,
@@ -5701,14 +5814,12 @@ function initPresMiniGlobe(parentEl, lng, lat) {
     scene3DOnly: true,
   });
 
-  // Add satellite imagery
   Cesium.ArcGisMapServerImageryProvider.fromUrl(
     'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
   ).then(function(provider) {
     if (presMiniGlobeViewer) presMiniGlobeViewer.imageryLayers.addImageryProvider(provider);
   }).catch(function() {});
 
-  // Disable all interaction
   const ctrl = presMiniGlobeViewer.scene.screenSpaceCameraController;
   ctrl.enableRotate = false;
   ctrl.enableZoom = false;
@@ -5719,28 +5830,164 @@ function initPresMiniGlobe(parentEl, lng, lat) {
   presMiniGlobeViewer.scene.postProcessStages.fxaa.enabled = false;
   presMiniGlobeViewer.scene.globe.enableLighting = false;
 
-  // Add a pin marker
-  presMiniGlobeViewer.entities.add({
-    position: Cesium.Cartesian3.fromDegrees(lng, lat),
-    point: {
-      pixelSize: 8,
-      color: Cesium.Color.fromCssColorString('#f59e0b'),
-      outlineColor: Cesium.Color.WHITE,
-      outlineWidth: 2,
-      disableDepthTestDistance: Number.POSITIVE_INFINITY,
-    },
+  // Set initial view
+  presMiniGlobeViewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(0, 20, 20000000),
+    orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
   });
 
-  // Set camera to look down at location
-  presMiniGlobeViewer.camera.setView({
-    destination: Cesium.Cartesian3.fromDegrees(lng, lat, 800000),
-    orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+  // Start spinning
+  startMiniGlobeSpin();
+}
+
+function destroyPresMiniGlobe() {
+  stopMiniGlobeSpin();
+  if (presMiniGlobeViewer) {
+    try { presMiniGlobeViewer.destroy(); } catch(e) {}
+    presMiniGlobeViewer = null;
+  }
+  presMiniGlobeEl.innerHTML = '';
+  presMiniGlobeWrap.classList.add('hidden');
+  presMiniLabel.textContent = '';
+}
+
+let miniGlobeTargetLng = null;
+let miniGlobeTargetLat = null;
+
+function startMiniGlobeSpin() {
+  stopMiniGlobeSpin();
+  const spinRate = 0.3; // degrees per frame (~18°/sec at 60fps)
+  function spin() {
+    if (!presMiniGlobeViewer || presMiniGlobeViewer.isDestroyed()) return;
+    presMiniGlobeViewer.scene.camera.rotateRight(Cesium.Math.toRadians(spinRate));
+    presMiniSpinRAF = requestAnimationFrame(spin);
+  }
+  presMiniSpinRAF = requestAnimationFrame(spin);
+}
+
+function stopMiniGlobeSpin() {
+  if (presMiniSpinRAF) {
+    cancelAnimationFrame(presMiniSpinRAF);
+    presMiniSpinRAF = null;
+  }
+}
+
+function updatePresMiniGlobe(loc, label) {
+  if (!presMiniGlobeViewer || presMiniGlobeViewer.isDestroyed()) return;
+
+  // Update label
+  presMiniLabel.textContent = label || '';
+
+  // Remove old entities
+  presMiniGlobeViewer.entities.removeAll();
+
+  if (loc) {
+    // Add marker
+    presMiniGlobeViewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat),
+      point: {
+        pixelSize: 8,
+        color: Cesium.Color.fromCssColorString('#f59e0b'),
+        outlineColor: Cesium.Color.WHITE,
+        outlineWidth: 2,
+        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      },
+    });
+
+    // Fly to location (zoomed out more: 3,000,000m altitude)
+    stopMiniGlobeSpin();
+    presMiniGlobeViewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat, 3000000),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+      duration: 1.5,
+      easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+      complete: function() {
+        // Resume spinning after arrival
+        startMiniGlobeSpin();
+      },
+    });
+  }
+}
+
+// ---- Comments ----
+function getPresComments(photoId) {
+  const trip = state.currentTrip;
+  if (!trip || !trip.comments) return [];
+  return trip.comments.filter(c => c.photo_id === photoId).sort((a, b) => {
+    return (a.created_at || '') < (b.created_at || '') ? -1 : 1;
   });
 }
 
+function renderPresComments(photoId) {
+  if (!photoId) {
+    presCommentsPanel.style.display = 'none';
+    return;
+  }
+  presCommentsPanel.style.display = 'flex';
+  presCommentsPanel.dataset.photoId = photoId;
+
+  const comments = getPresComments(photoId);
+  if (comments.length === 0) {
+    presCommentsList.innerHTML = '<div style="color:rgba(255,255,255,0.3);font-size:12px;text-align:center;padding:8px">No comments yet</div>';
+  } else {
+    presCommentsList.innerHTML = comments.map(c => {
+      const when = c.created_at ? formatPresCommentTime(c.created_at) : '';
+      return '<div class="pres-comment">'
+        + '<div class="pres-comment-author">' + escapeHtml(c.author) + '</div>'
+        + '<div class="pres-comment-body">' + escapeHtml(c.body) + '</div>'
+        + (when ? '<div class="pres-comment-time">' + when + '</div>' : '')
+        + '</div>';
+    }).join('');
+    presCommentsList.scrollTop = presCommentsList.scrollHeight;
+  }
+}
+
+function formatPresCommentTime(d) {
+  const dt = new Date(d);
+  const now = new Date();
+  const diffMs = now - dt;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return diffMin + 'm ago';
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return diffH + 'h ago';
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+async function submitPresComment() {
+  const body = presCommentInput.value.trim();
+  if (!body) return;
+  const photoId = presCommentsPanel.dataset.photoId;
+  if (!photoId) return;
+
+  const trip = state.currentTrip;
+  if (!trip) return;
+
+  try {
+    let comment;
+    if (state.shareID) {
+      comment = await api('POST', '/api/share/' + state.shareID + '/photos/' + photoId + '/comments', { body: body, author: '' });
+    } else {
+      comment = await api('POST', '/api/photos/' + photoId + '/comments', { body: body, author: '' });
+    }
+    // Add to local state
+    if (!trip.comments) trip.comments = [];
+    trip.comments.push(comment);
+    presCommentInput.value = '';
+    renderPresComments(photoId);
+  } catch (err) {
+    toast('Failed to post comment', 'error');
+  }
+}
+
+$('#presCommentSend').addEventListener('click', submitPresComment);
+presCommentInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitPresComment(); }
+  e.stopPropagation(); // Don't let arrow keys etc. bubble to slide nav
+});
+presCommentInput.addEventListener('keyup', (e) => e.stopPropagation());
+
 function showPresGlobe(slide) {
-  // Destroy mini globe from photo slide
-  destroyPresMiniGlobe();
   presContent.innerHTML = '';
   const container = document.createElement('div');
   container.className = 'pres-globe-slide active';
@@ -5750,7 +5997,6 @@ function showPresGlobe(slide) {
   globeDiv.id = 'presGlobeContainer';
   container.appendChild(globeDiv);
 
-  // Label overlay
   const label = document.createElement('div');
   label.className = 'pres-globe-label';
   label.innerHTML = escapeHtml(slide.stopTitle)
@@ -5760,16 +6006,14 @@ function showPresGlobe(slide) {
 
   presContent.appendChild(container);
 
-  // Caption for globe
   presCaption.innerHTML = '';
   presBottom.style.display = '';
+  presCommentsPanel.style.display = 'none';
 
-  // Create or reuse a Cesium viewer for the presentation
   initPresGlobe(globeDiv, slide.stop);
 }
 
 function initPresGlobe(containerEl, stop) {
-  // Destroy old if exists
   if (presGlobeViewer) {
     try { presGlobeViewer.destroy(); } catch(e) {}
     presGlobeViewer = null;
@@ -5795,13 +6039,12 @@ function initPresGlobe(containerEl, stop) {
     scene3DOnly: true,
   });
 
-  // Match main globe imagery: ESRI satellite
   Cesium.ArcGisMapServerImageryProvider.fromUrl(
     'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
   ).then(function(provider) {
-    presGlobeViewer.imageryLayers.addImageryProvider(provider);
+    if (presGlobeViewer && !presGlobeViewer.isDestroyed()) presGlobeViewer.imageryLayers.addImageryProvider(provider);
   }).catch(function() {
-    presGlobeViewer.imageryLayers.addImageryProvider(
+    if (presGlobeViewer && !presGlobeViewer.isDestroyed()) presGlobeViewer.imageryLayers.addImageryProvider(
       new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })
     );
   });
@@ -5810,7 +6053,6 @@ function initPresGlobe(containerEl, stop) {
   presGlobeViewer.scene.globe.enableLighting = false;
   presGlobeViewer.scene.globe.depthTestAgainstTerrain = false;
 
-  // Disable user interaction for a clean presentation
   const ctrl = presGlobeViewer.scene.screenSpaceCameraController;
   ctrl.enableRotate = false;
   ctrl.enableZoom = false;
@@ -5818,7 +6060,6 @@ function initPresGlobe(containerEl, stop) {
   ctrl.enableTilt = false;
   ctrl.enableLook = false;
 
-  // Add marker for the stop
   presGlobeViewer.entities.add({
     position: Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat),
     billboard: {
@@ -5829,7 +6070,6 @@ function initPresGlobe(containerEl, stop) {
     },
   });
 
-  // Compute destination
   let dest, heading, pitch;
   if (stop.cam_lng != null && stop.cam_lat != null && stop.cam_height != null) {
     dest = Cesium.Cartesian3.fromDegrees(stop.cam_lng, stop.cam_lat, stop.cam_height);
@@ -5843,7 +6083,6 @@ function initPresGlobe(containerEl, stop) {
     pitch = Cesium.Math.toRadians(-45);
   }
 
-  // Start from a wide view and fly in
   presGlobeViewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat, 8000000),
     orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
@@ -5857,12 +6096,10 @@ function initPresGlobe(containerEl, stop) {
   });
 }
 
-// Build stop marker icon (reuse from main code)
 function buildStopIcon(num) {
   const c = document.createElement('canvas');
   c.width = 48; c.height = 48;
   const ctx = c.getContext('2d');
-  // Orange circle
   ctx.beginPath();
   ctx.arc(24, 24, 18, 0, Math.PI * 2);
   ctx.fillStyle = '#f59e0b';
@@ -5870,7 +6107,6 @@ function buildStopIcon(num) {
   ctx.strokeStyle = '#fff';
   ctx.lineWidth = 3;
   ctx.stroke();
-  // Number
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 18px sans-serif';
   ctx.textAlign = 'center';

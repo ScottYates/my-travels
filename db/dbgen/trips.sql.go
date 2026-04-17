@@ -41,6 +41,32 @@ func (q *Queries) CountStops(ctx context.Context, tripID string) (int64, error) 
 	return count, err
 }
 
+const createComment = `-- name: CreateComment :exec
+INSERT INTO comments (id, photo_id, trip_id, author, body, created_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`
+
+type CreateCommentParams struct {
+	ID        string    `json:"id"`
+	PhotoID   string    `json:"photo_id"`
+	TripID    string    `json:"trip_id"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) error {
+	_, err := q.db.ExecContext(ctx, createComment,
+		arg.ID,
+		arg.PhotoID,
+		arg.TripID,
+		arg.Author,
+		arg.Body,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const createPhoto = `-- name: CreatePhoto :exec
 INSERT INTO photos (id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -166,6 +192,15 @@ func (q *Queries) CreateTrip(ctx context.Context, arg CreateTripParams) error {
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
+	return err
+}
+
+const deleteComment = `-- name: DeleteComment :exec
+DELETE FROM comments WHERE id = ?
+`
+
+func (q *Queries) DeleteComment(ctx context.Context, id string) error {
+	_, err := q.db.ExecContext(ctx, deleteComment, id)
 	return err
 }
 
@@ -330,6 +365,74 @@ func (q *Queries) GetTripByShareID(ctx context.Context, shareID string) (Trip, e
 		&i.DefaultCamRange,
 	)
 	return i, err
+}
+
+const listCommentsByPhoto = `-- name: ListCommentsByPhoto :many
+SELECT id, photo_id, trip_id, author, body, created_at FROM comments WHERE photo_id = ? ORDER BY created_at ASC
+`
+
+func (q *Queries) ListCommentsByPhoto(ctx context.Context, photoID string) ([]Comment, error) {
+	rows, err := q.db.QueryContext(ctx, listCommentsByPhoto, photoID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.PhotoID,
+			&i.TripID,
+			&i.Author,
+			&i.Body,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentsByTrip = `-- name: ListCommentsByTrip :many
+SELECT id, photo_id, trip_id, author, body, created_at FROM comments WHERE trip_id = ? ORDER BY created_at ASC
+`
+
+func (q *Queries) ListCommentsByTrip(ctx context.Context, tripID string) ([]Comment, error) {
+	rows, err := q.db.QueryContext(ctx, listCommentsByTrip, tripID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.PhotoID,
+			&i.TripID,
+			&i.Author,
+			&i.Body,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listPhotos = `-- name: ListPhotos :many

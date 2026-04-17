@@ -91,3 +91,16 @@ UPDATE photos SET stop_id = NULL WHERE trip_id = ?;
 
 -- name: ListPhotosWithLocation :many
 SELECT * FROM photos WHERE trip_id = ? AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY taken_at ASC, created_at ASC;
+
+-- name: CreateComment :exec
+INSERT INTO comments (id, photo_id, trip_id, author, body, created_at)
+VALUES (?, ?, ?, ?, ?, ?);
+
+-- name: ListCommentsByPhoto :many
+SELECT * FROM comments WHERE photo_id = ? ORDER BY created_at ASC;
+
+-- name: ListCommentsByTrip :many
+SELECT * FROM comments WHERE trip_id = ? ORDER BY created_at ASC;
+
+-- name: DeleteComment :exec
+DELETE FROM comments WHERE id = ?;
