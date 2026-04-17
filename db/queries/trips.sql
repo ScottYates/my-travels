@@ -28,7 +28,7 @@ SELECT * FROM stops WHERE trip_id = ? ORDER BY stop_order ASC;
 SELECT * FROM stops WHERE id = ?;
 
 -- name: UpdateStop :exec
-UPDATE stops SET title = ?, description = ?, lat = ?, lng = ?, elevation = ?, stop_order = ?, arrived_at = ?, location_name = ? WHERE id = ?;
+UPDATE stops SET title = ?, description = ?, lat = ?, lng = ?, elevation = ?, stop_order = ?, arrived_at = ?, location_name = ?, cam_lng = ?, cam_lat = ?, cam_height = ?, cam_heading = ?, cam_pitch = ? WHERE id = ?;
 
 -- name: DeleteStop :exec
 DELETE FROM stops WHERE id = ?;

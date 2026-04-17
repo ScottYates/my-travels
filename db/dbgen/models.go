@@ -54,6 +54,11 @@ type Stop struct {
 	ArrivedAt    *time.Time `json:"arrived_at"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LocationName string     `json:"location_name"`
+	CamLng       *float64   `json:"cam_lng"`
+	CamLat       *float64   `json:"cam_lat"`
+	CamHeight    *float64   `json:"cam_height"`
+	CamHeading   *float64   `json:"cam_heading"`
+	CamPitch     *float64   `json:"cam_pitch"`
 }
 
 type Trip struct {

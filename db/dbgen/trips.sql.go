@@ -261,7 +261,7 @@ func (q *Queries) GetPhoto(ctx context.Context, id string) (Photo, error) {
 }
 
 const getStop = `-- name: GetStop :one
-SELECT id, trip_id, title, description, lat, lng, elevation, stop_order, arrived_at, created_at, location_name FROM stops WHERE id = ?
+SELECT id, trip_id, title, description, lat, lng, elevation, stop_order, arrived_at, created_at, location_name, cam_lng, cam_lat, cam_height, cam_heading, cam_pitch FROM stops WHERE id = ?
 `
 
 func (q *Queries) GetStop(ctx context.Context, id string) (Stop, error) {
@@ -279,6 +279,11 @@ func (q *Queries) GetStop(ctx context.Context, id string) (Stop, error) {
 		&i.ArrivedAt,
 		&i.CreatedAt,
 		&i.LocationName,
+		&i.CamLng,
+		&i.CamLat,
+		&i.CamHeight,
+		&i.CamHeading,
+		&i.CamPitch,
 	)
 	return i, err
 }
@@ -494,7 +499,7 @@ func (q *Queries) ListRoutes(ctx context.Context, tripID string) ([]Route, error
 }
 
 const listStops = `-- name: ListStops :many
-SELECT id, trip_id, title, description, lat, lng, elevation, stop_order, arrived_at, created_at, location_name FROM stops WHERE trip_id = ? ORDER BY stop_order ASC
+SELECT id, trip_id, title, description, lat, lng, elevation, stop_order, arrived_at, created_at, location_name, cam_lng, cam_lat, cam_height, cam_heading, cam_pitch FROM stops WHERE trip_id = ? ORDER BY stop_order ASC
 `
 
 func (q *Queries) ListStops(ctx context.Context, tripID string) ([]Stop, error) {
@@ -518,6 +523,11 @@ func (q *Queries) ListStops(ctx context.Context, tripID string) ([]Stop, error) 
 			&i.ArrivedAt,
 			&i.CreatedAt,
 			&i.LocationName,
+			&i.CamLng,
+			&i.CamLat,
+			&i.CamHeight,
+			&i.CamHeading,
+			&i.CamPitch,
 		); err != nil {
 			return nil, err
 		}
@@ -639,7 +649,7 @@ func (q *Queries) UpdatePhoto(ctx context.Context, arg UpdatePhotoParams) error 
 }
 
 const updateStop = `-- name: UpdateStop :exec
-UPDATE stops SET title = ?, description = ?, lat = ?, lng = ?, elevation = ?, stop_order = ?, arrived_at = ?, location_name = ? WHERE id = ?
+UPDATE stops SET title = ?, description = ?, lat = ?, lng = ?, elevation = ?, stop_order = ?, arrived_at = ?, location_name = ?, cam_lng = ?, cam_lat = ?, cam_height = ?, cam_heading = ?, cam_pitch = ? WHERE id = ?
 `
 
 type UpdateStopParams struct {
@@ -651,6 +661,11 @@ type UpdateStopParams struct {
 	StopOrder    int64      `json:"stop_order"`
 	ArrivedAt    *time.Time `json:"arrived_at"`
 	LocationName string     `json:"location_name"`
+	CamLng       *float64   `json:"cam_lng"`
+	CamLat       *float64   `json:"cam_lat"`
+	CamHeight    *float64   `json:"cam_height"`
+	CamHeading   *float64   `json:"cam_heading"`
+	CamPitch     *float64   `json:"cam_pitch"`
 	ID           string     `json:"id"`
 }
 
@@ -664,6 +679,11 @@ func (q *Queries) UpdateStop(ctx context.Context, arg UpdateStopParams) error {
 		arg.StopOrder,
 		arg.ArrivedAt,
 		arg.LocationName,
+		arg.CamLng,
+		arg.CamLat,
+		arg.CamHeight,
+		arg.CamHeading,
+		arg.CamPitch,
 		arg.ID,
 	)
 	return err

@@ -1339,6 +1339,14 @@ body.readonly .edit-only { display: none !important; }
       <label>Arrived At</label>
       <input type="datetime-local" class="form-input" id="editStopDate">
     </div>
+    <div class="form-group">
+      <label>Camera View</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-ghost btn-sm" id="editStopSetCam" title="Save the current globe camera position for this stop">📷 Use Current View</button>
+        <button class="btn btn-ghost btn-sm" id="editStopClearCam" title="Remove saved camera view" style="display:none">✕ Clear</button>
+      </div>
+      <div id="editStopCamInfo" style="font-size:12px;color:#94a3b8;margin-top:4px"></div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" id="editStopCancel">Cancel</button>
       <button class="btn btn-primary" id="editStopSave">Save</button>
@@ -3031,13 +3039,7 @@ function onCesiumClick(screenPos) {
 
   if (entity) {
     if (entity._stopData) {
-      // Fly to stop location (no popup) — offset camera south so markers are visible
-      const s = entity._stopData;
-      const camHeight = 12000;
-      const latOffset = camHeight / 111320;
-      const dest = Cesium.Cartesian3.fromDegrees(s.lng, s.lat - latOffset, camHeight);
-      const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
-      viewer.camera.flyTo({ destination: dest, orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: d, easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT });
+      flyToStop(entity._stopData);
     } else if (entity._photoData) {
       const p = entity._photoData;
       closeGlobePopup();
@@ -3534,14 +3536,7 @@ function wireDetailEvents() {
       if (e.target.closest('.edit-stop-btn') || e.target.closest('.delete-stop-btn')) return;
       const sid = el.dataset.stopId;
       const stop = (trip.stops || []).find(s => s.id === sid);
-      if (stop) {
-        // Offset camera south so the stop markers are visible ahead with -45° pitch
-        const camHeight = 12000;
-        const latOffset = camHeight / 111320; // tan(45°)=1, so offset = height
-        const dest = Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat - latOffset, camHeight);
-        const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
-        viewer.camera.flyTo({ destination: dest, orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: d, easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT });
-      }
+      if (stop) flyToStop(stop);
     });
   });
 
@@ -4322,48 +4317,113 @@ function openEditStop(stopId) {
   $('#editStopLocation').value = stop.location_name || '';
   if (stop.arrived_at) {
     const d = new Date(stop.arrived_at);
-    // format for datetime-local input
     const pad = (n) => String(n).padStart(2, '0');
     const val = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
     $('#editStopDate').value = val;
   } else {
     $('#editStopDate').value = '';
   }
+
+  // Camera view state for this edit session
+  let pendingCam = null;
+  let camCleared = false;
+  if (stop.cam_lng != null && stop.cam_lat != null && stop.cam_height != null) {
+    pendingCam = {
+      cam_lng: stop.cam_lng,
+      cam_lat: stop.cam_lat,
+      cam_height: stop.cam_height,
+      cam_heading: stop.cam_heading,
+      cam_pitch: stop.cam_pitch,
+    };
+  }
+
+  function updateCamUI() {
+    const info = $('#editStopCamInfo');
+    const clearBtn = $('#editStopClearCam');
+    if (pendingCam) {
+      const h = (Cesium.Math.toDegrees(pendingCam.cam_heading || 0) % 360).toFixed(1);
+      const p = Cesium.Math.toDegrees(pendingCam.cam_pitch || -0.785).toFixed(1);
+      const alt = (pendingCam.cam_height / 1000).toFixed(1);
+      info.textContent = 'Saved: ' + alt + ' km alt, heading ' + h + '\u00B0, pitch ' + p + '\u00B0';
+      clearBtn.style.display = '';
+    } else {
+      info.textContent = 'No custom camera — uses default view';
+      clearBtn.style.display = 'none';
+    }
+  }
+  updateCamUI();
+
   $('#editStopModal').classList.add('active');
+
+  // Wire "Use Current View" button
+  const setCamHandler = () => {
+    const cart = viewer.camera.positionCartographic;
+    pendingCam = {
+      cam_lng: Cesium.Math.toDegrees(cart.longitude),
+      cam_lat: Cesium.Math.toDegrees(cart.latitude),
+      cam_height: cart.height,
+      cam_heading: viewer.camera.heading,
+      cam_pitch: viewer.camera.pitch,
+    };
+    updateCamUI();
+    toast('Camera view captured');
+  };
+  const clearCamHandler = () => {
+    pendingCam = null;
+    camCleared = true;
+    updateCamUI();
+  };
+
+  // Clone to remove old listeners
+  function replaceBtn(id, handler) {
+    const old = $(id);
+    const nw = old.cloneNode(true);
+    old.parentNode.replaceChild(nw, old);
+    nw.addEventListener('click', handler);
+    return nw;
+  }
+  replaceBtn('#editStopSetCam', setCamHandler);
+  replaceBtn('#editStopClearCam', clearCamHandler);
 
   // Wire save
   const saveHandler = async () => {
     const arrived = $('#editStopDate').value ? new Date($('#editStopDate').value).toISOString() : null;
+    const payload = {
+      title: $('#editStopName').value,
+      description: $('#editStopDesc').value,
+      location_name: $('#editStopLocation').value,
+      lat: stop.lat,
+      lng: stop.lng,
+      elevation: stop.elevation || 0,
+      stop_order: stop.stop_order,
+      arrived_at: arrived,
+    };
+    if (pendingCam) {
+      payload.cam_lng = pendingCam.cam_lng;
+      payload.cam_lat = pendingCam.cam_lat;
+      payload.cam_height = pendingCam.cam_height;
+      payload.cam_heading = pendingCam.cam_heading;
+      payload.cam_pitch = pendingCam.cam_pitch;
+    } else if (camCleared) {
+      payload.cam_lng = null;
+      payload.cam_lat = null;
+      payload.cam_height = null;
+      payload.cam_heading = null;
+      payload.cam_pitch = null;
+      payload.clear_camera = true;
+    }
     try {
-      await api('PUT', '/api/stops/' + stopId, {
-        title: $('#editStopName').value,
-        description: $('#editStopDesc').value,
-        location_name: $('#editStopLocation').value,
-        lat: stop.lat,
-        lng: stop.lng,
-        elevation: stop.elevation || 0,
-        stop_order: stop.stop_order,
-        arrived_at: arrived,
-      });
+      await api('PUT', '/api/stops/' + stopId, payload);
       toast('Stop updated');
       $('#editStopModal').classList.remove('active');
-      $('#editStopSave').removeEventListener('click', saveHandler);
       reloadCurrentTrip();
     } catch (err) {
       toast(err.message, 'error');
     }
   };
 
-  // Remove old listeners by cloning
-  const oldSave = $('#editStopSave');
-  const newSave = oldSave.cloneNode(true);
-  oldSave.parentNode.replaceChild(newSave, oldSave);
-  newSave.addEventListener('click', saveHandler);
-
-  const oldCancel = $('#editStopCancel');
-  const newCancel = oldCancel.cloneNode(true);
-  oldCancel.parentNode.replaceChild(newCancel, oldCancel);
-  newCancel.addEventListener('click', () => {
+  replaceBtn('#editStopSave', saveHandler);
+  replaceBtn('#editStopCancel', () => {
     $('#editStopModal').classList.remove('active');
   });
 }
@@ -4471,6 +4531,29 @@ $('#cancelDraw').addEventListener('click', () => {
 // Map data rendering (Cesium entities)
 // ---------------------------------------------------------------
 var _photoLoadGeneration = 0; // cancellation token for async photo thumbnail loading
+
+// Fly to a stop, using saved camera view if available, otherwise default offset view
+function flyToStop(stop) {
+  let dest, heading, pitch;
+  if (stop.cam_lng != null && stop.cam_lat != null && stop.cam_height != null) {
+    dest = Cesium.Cartesian3.fromDegrees(stop.cam_lng, stop.cam_lat, stop.cam_height);
+    heading = stop.cam_heading != null ? stop.cam_heading : 0;
+    pitch = stop.cam_pitch != null ? stop.cam_pitch : Cesium.Math.toRadians(-45);
+  } else {
+    const camHeight = 12000;
+    const latOffset = camHeight / 111320;
+    dest = Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat - latOffset, camHeight);
+    heading = 0;
+    pitch = Cesium.Math.toRadians(-45);
+  }
+  const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
+  viewer.camera.flyTo({
+    destination: dest,
+    orientation: { heading: heading, pitch: pitch, roll: 0 },
+    duration: d,
+    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+  });
+}
 
 function clearMapData() {
   // Cancel any in-progress photo thumbnail loading
@@ -4969,7 +5052,7 @@ function renderTimeline() {
       return ta < tb ? -1 : ta > tb ? 1 : 0;
     });
 
-    html += '<div class="timeline-card" data-lat="' + stop.lat + '" data-lng="' + stop.lng + '">';
+    html += '<div class="timeline-card" data-lat="' + stop.lat + '" data-lng="' + stop.lng + '" data-stop-id="' + escapeHtml(stop.id) + '">';
     if (stop.arrived_at) {
       html += '<div class="tc-date">' + formatDate(stop.arrived_at) + '</div>';
     }
@@ -5010,19 +5093,27 @@ function renderTimeline() {
     card.addEventListener('click', (e) => {
       if (e.target.tagName === 'IMG' && e.target.dataset.photoId) return;
       if (e.target.closest('.tc-count')) return;
-      const lat = parseFloat(card.dataset.lat);
-      const lng = parseFloat(card.dataset.lng);
-      if (!isNaN(lat) && !isNaN(lng)) {
-        const camHeight = 12000;
-        const latOff = camHeight / 111320;
-        const dest = Cesium.Cartesian3.fromDegrees(lng, lat - latOff, camHeight);
-        const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
-        viewer.camera.flyTo({
-          destination: dest,
-          orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
-          duration: d,
-          easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
-        });
+      const sid = card.dataset.stopId;
+      const trip = state.currentTrip;
+      const stop = trip && sid ? (trip.stops || []).find(s => s.id === sid) : null;
+      if (stop) {
+        flyToStop(stop);
+      } else {
+        // Fallback if stop not found
+        const lat = parseFloat(card.dataset.lat);
+        const lng = parseFloat(card.dataset.lng);
+        if (!isNaN(lat) && !isNaN(lng)) {
+          const camHeight = 12000;
+          const latOff = camHeight / 111320;
+          const dest = Cesium.Cartesian3.fromDegrees(lng, lat - latOff, camHeight);
+          const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
+          viewer.camera.flyTo({
+            destination: dest,
+            orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+            duration: d,
+            easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+          });
+        }
       }
     });
   });

@@ -478,6 +478,12 @@ func (s *Server) handleUpdateStop(w http.ResponseWriter, r *http.Request) {
 		StopOrder    int64      `json:"stop_order"`
 		ArrivedAt    *time.Time `json:"arrived_at"`
 		LocationName *string    `json:"location_name"`
+		CamLng       *float64   `json:"cam_lng"`
+		CamLat       *float64   `json:"cam_lat"`
+		CamHeight    *float64   `json:"cam_height"`
+		CamHeading   *float64   `json:"cam_heading"`
+		CamPitch     *float64   `json:"cam_pitch"`
+		ClearCamera  bool       `json:"clear_camera"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid JSON body", http.StatusBadRequest)
@@ -495,11 +501,29 @@ func (s *Server) handleUpdateStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use provided location_name, or preserve existing
+	// Preserve existing optional fields when not provided
 	existing, _ := q.GetStop(r.Context(), id)
 	locName := existing.LocationName
 	if body.LocationName != nil {
 		locName = *body.LocationName
+	}
+
+	// Preserve existing camera fields if not provided; clear all if clear_camera is set
+	var camLng, camLat, camHeight, camHeading, camPitch *float64
+	if body.ClearCamera {
+		// Explicitly clear all camera fields
+	} else if body.CamLng != nil {
+		camLng = body.CamLng
+		camLat = body.CamLat
+		camHeight = body.CamHeight
+		camHeading = body.CamHeading
+		camPitch = body.CamPitch
+	} else {
+		camLng = existing.CamLng
+		camLat = existing.CamLat
+		camHeight = existing.CamHeight
+		camHeading = existing.CamHeading
+		camPitch = existing.CamPitch
 	}
 
 	if err := q.UpdateStop(r.Context(), dbgen.UpdateStopParams{
@@ -511,6 +535,11 @@ func (s *Server) handleUpdateStop(w http.ResponseWriter, r *http.Request) {
 		StopOrder:    body.StopOrder,
 		ArrivedAt:    body.ArrivedAt,
 		LocationName: locName,
+		CamLng:       camLng,
+		CamLat:       camLat,
+		CamHeight:    camHeight,
+		CamHeading:   camHeading,
+		CamPitch:     camPitch,
 		ID:           id,
 	}); err != nil {
 		jsonError(w, "failed to update stop", http.StatusInternalServerError)
