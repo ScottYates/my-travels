@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+const claimOrphanedTrips = `-- name: ClaimOrphanedTrips :exec
+UPDATE trips SET user_id = ? WHERE user_id IS NULL
+`
+
+func (q *Queries) ClaimOrphanedTrips(ctx context.Context, userID *string) error {
+	_, err := q.db.ExecContext(ctx, claimOrphanedTrips, userID)
+	return err
+}
+
 const clearPhotoStopIDs = `-- name: ClearPhotoStopIDs :exec
 UPDATE photos SET stop_id = NULL WHERE trip_id = ?
 `
@@ -170,8 +179,8 @@ func (q *Queries) CreateStop(ctx context.Context, arg CreateStopParams) error {
 }
 
 const createTrip = `-- name: CreateTrip :exec
-INSERT INTO trips (id, share_id, title, description, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO trips (id, share_id, title, description, created_at, updated_at, user_id)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreateTripParams struct {
@@ -181,6 +190,7 @@ type CreateTripParams struct {
 	Description string    `json:"description"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	UserID      *string   `json:"user_id"`
 }
 
 func (q *Queries) CreateTrip(ctx context.Context, arg CreateTripParams) error {
@@ -191,6 +201,7 @@ func (q *Queries) CreateTrip(ctx context.Context, arg CreateTripParams) error {
 		arg.Description,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.UserID,
 	)
 	return err
 }
@@ -324,7 +335,7 @@ func (q *Queries) GetStop(ctx context.Context, id string) (Stop, error) {
 }
 
 const getTrip = `-- name: GetTrip :one
-SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips WHERE id = ?
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug, user_id FROM trips WHERE id = ?
 `
 
 func (q *Queries) GetTrip(ctx context.Context, id string) (Trip, error) {
@@ -342,12 +353,13 @@ func (q *Queries) GetTrip(ctx context.Context, id string) (Trip, error) {
 		&i.DefaultCamPitch,
 		&i.DefaultCamRange,
 		&i.PresentSlug,
+		&i.UserID,
 	)
 	return i, err
 }
 
 const getTripByPresentSlug = `-- name: GetTripByPresentSlug :one
-SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips WHERE present_slug = ?
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug, user_id FROM trips WHERE present_slug = ?
 `
 
 func (q *Queries) GetTripByPresentSlug(ctx context.Context, presentSlug *string) (Trip, error) {
@@ -365,12 +377,13 @@ func (q *Queries) GetTripByPresentSlug(ctx context.Context, presentSlug *string)
 		&i.DefaultCamPitch,
 		&i.DefaultCamRange,
 		&i.PresentSlug,
+		&i.UserID,
 	)
 	return i, err
 }
 
 const getTripByShareID = `-- name: GetTripByShareID :one
-SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips WHERE share_id = ?
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug, user_id FROM trips WHERE share_id = ?
 `
 
 func (q *Queries) GetTripByShareID(ctx context.Context, shareID string) (Trip, error) {
@@ -388,6 +401,7 @@ func (q *Queries) GetTripByShareID(ctx context.Context, shareID string) (Trip, e
 		&i.DefaultCamPitch,
 		&i.DefaultCamRange,
 		&i.PresentSlug,
+		&i.UserID,
 	)
 	return i, err
 }
@@ -671,7 +685,7 @@ func (q *Queries) ListStops(ctx context.Context, tripID string) ([]Stop, error) 
 }
 
 const listTrips = `-- name: ListTrips :many
-SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips ORDER BY updated_at DESC
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug, user_id FROM trips ORDER BY updated_at DESC
 `
 
 func (q *Queries) ListTrips(ctx context.Context) ([]Trip, error) {
@@ -695,6 +709,47 @@ func (q *Queries) ListTrips(ctx context.Context) ([]Trip, error) {
 			&i.DefaultCamPitch,
 			&i.DefaultCamRange,
 			&i.PresentSlug,
+			&i.UserID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTripsByUser = `-- name: ListTripsByUser :many
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug, user_id FROM trips WHERE user_id = ? ORDER BY updated_at DESC
+`
+
+func (q *Queries) ListTripsByUser(ctx context.Context, userID *string) ([]Trip, error) {
+	rows, err := q.db.QueryContext(ctx, listTripsByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Trip{}
+	for rows.Next() {
+		var i Trip
+		if err := rows.Scan(
+			&i.ID,
+			&i.ShareID,
+			&i.Title,
+			&i.Description,
+			&i.CoverPhotoID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DefaultCamHeading,
+			&i.DefaultCamPitch,
+			&i.DefaultCamRange,
+			&i.PresentSlug,
+			&i.UserID,
 		); err != nil {
 			return nil, err
 		}

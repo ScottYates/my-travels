@@ -1,6 +1,6 @@
 -- name: CreateTrip :exec
-INSERT INTO trips (id, share_id, title, description, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?);
+INSERT INTO trips (id, share_id, title, description, created_at, updated_at, user_id)
+VALUES (?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetTrip :one
 SELECT * FROM trips WHERE id = ?;
@@ -10,6 +10,9 @@ SELECT * FROM trips WHERE share_id = ?;
 
 -- name: ListTrips :many
 SELECT * FROM trips ORDER BY updated_at DESC;
+
+-- name: ListTripsByUser :many
+SELECT * FROM trips WHERE user_id = ? ORDER BY updated_at DESC;
 
 -- name: UpdateTrip :exec
 UPDATE trips SET title = ?, description = ?, cover_photo_id = ?, default_cam_heading = ?, default_cam_pitch = ?, default_cam_range = ?, updated_at = ? WHERE id = ?;
@@ -110,3 +113,6 @@ SELECT * FROM trips WHERE present_slug = ?;
 
 -- name: UpdatePresentSlug :exec
 UPDATE trips SET present_slug = ?, updated_at = ? WHERE id = ?;
+
+-- name: ClaimOrphanedTrips :exec
+UPDATE trips SET user_id = ? WHERE user_id IS NULL;

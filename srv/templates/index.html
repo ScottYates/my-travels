@@ -112,6 +112,82 @@ body {
 .header-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.user-email {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.logout-btn {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.logout-btn:hover {
+  color: var(--text);
+  background: var(--navy-lighter);
+}
+.login-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px;
+  text-align: center;
+  gap: 16px;
+}
+.login-prompt .login-icon { font-size: 48px; }
+.login-prompt h3 { font-size: 18px; font-weight: 700; }
+.login-prompt p { font-size: 14px; color: var(--text-muted); line-height: 1.5; }
+.login-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 24px;
+  background: #fff;
+  color: #333;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.login-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+.login-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 /* Breadcrumb / back nav */
@@ -1079,6 +1155,8 @@ textarea.form-input {
 
 body.readonly .readonly-badge { display: inline-flex; }
 body.readonly .edit-only { display: none !important; }
+body.no-auth .edit-only { display: none !important; }
+body.no-auth .readonly-badge { display: none !important; }
 
 /* Empty states */
 .empty-state {
@@ -1701,6 +1779,7 @@ body.readonly .edit-only { display: none !important; }
       <h1><span>🌍</span> My Travels</h1>
       <div class="header-actions">
         <span class="readonly-badge">👁 View Only</span>
+        <div class="user-info" id="userInfo"></div>
       </div>
     </div>
 
@@ -1823,6 +1902,12 @@ body.readonly .edit-only { display: none !important; }
 "use strict";
 
 // ---------------------------------------------------------------
+// Auth (injected from server)
+// ---------------------------------------------------------------
+const __authInfo = {{ .AuthJSON }};
+const currentUser = __authInfo.authenticated ? { userId: __authInfo.user_id, email: __authInfo.email } : null;
+
+// ---------------------------------------------------------------
 // State
 // ---------------------------------------------------------------
 const state = window._state = {
@@ -1860,6 +1945,10 @@ if (pathParts[1] === 'present' && pathParts[2]) {
   state.presentOnly = true;
   document.body.classList.add('readonly');
 }
+// If not logged in and not in a share/present view, hide edit controls
+if (!currentUser && !state.readOnly) {
+  document.body.classList.add('no-auth');
+}
 
 // ---------------------------------------------------------------
 // DOM refs
@@ -1879,6 +1968,26 @@ const timelineContent = $('#timelineContent');
 const shareBar = $('#shareBar');
 const shareUrl = $('#shareUrl');
 const toastContainer = $('#toastContainer');
+
+// ---------------------------------------------------------------
+// User info / login
+// ---------------------------------------------------------------
+const userInfoEl = $('#userInfo');
+if (!state.readOnly && !state.presentOnly) {
+  if (currentUser) {
+    const initials = (currentUser.email || '?').substring(0, 1).toUpperCase();
+    userInfoEl.innerHTML =
+      '<div class="user-avatar">' + initials + '</div>' +
+      '<span class="user-email" title="' + currentUser.email + '">' + currentUser.email + '</span>' +
+      '<form method="POST" action="/__exe.dev/logout" style="margin:0">' +
+        '<button type="submit" class="logout-btn" title="Log out">Logout</button>' +
+      '</form>';
+  } else {
+    userInfoEl.innerHTML =
+      '<a href="/__exe.dev/login?redirect=' + encodeURIComponent(window.location.pathname) + '" ' +
+        'style="color:var(--accent);font-size:12px;font-weight:600;text-decoration:none">Sign in</a>';
+  }
+}
 
 // ---------------------------------------------------------------
 // Helpers
@@ -3576,6 +3685,19 @@ $('#mobileToggle').addEventListener('click', () => {
 // Trips List
 // ---------------------------------------------------------------
 async function loadTrips() {
+  if (!currentUser) {
+    tripsList.innerHTML =
+      '<div class="login-prompt">' +
+        '<div class="login-icon">🌍</div>' +
+        '<h3>Welcome to My Travels</h3>' +
+        '<p>Sign in with your exe.dev account to create and manage your travel maps.</p>' +
+        '<a href="/__exe.dev/login?redirect=' + encodeURIComponent('/') + '" class="login-btn">' +
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 012 2v14a2 2 0 01-2 2h-4M10 17l5-5-5-5M15 12H3"/></svg>' +
+          'Sign in' +
+        '</a>' +
+      '</div>';
+    return;
+  }
   try {
     tripsList.innerHTML = '<div class="spinner"></div>';
     state.trips = await api('GET', '/api/trips');
@@ -5876,18 +5998,16 @@ function initPresMiniGlobe() {
   presMiniGlobeViewer.scene.postProcessStages.fxaa.enabled = false;
   presMiniGlobeViewer.scene.globe.enableLighting = false;
 
-  // Set initial view
+  // Set initial view — will be positioned by first updatePresMiniGlobe call
   presMiniGlobeViewer.camera.setView({
     destination: Cesium.Cartesian3.fromDegrees(0, 20, 20000000),
     orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
   });
-
-  // Start spinning
-  startMiniGlobeSpin();
 }
 
 function destroyPresMiniGlobe() {
   stopMiniGlobeSpin();
+  miniGlobeLastTargetKey = null;
   if (presMiniGlobeViewer) {
     try { presMiniGlobeViewer.destroy(); } catch(e) {}
     presMiniGlobeViewer = null;
@@ -5897,34 +6017,70 @@ function destroyPresMiniGlobe() {
   presMiniLabel.textContent = '';
 }
 
-let miniGlobeSpinTotal = 0; // accumulated rotation in radians
-const MINI_GLOBE_FULL_SPIN = Cesium.Math.TWO_PI; // one full rotation
+let miniGlobeLastTargetKey = null; // track last target to avoid re-spinning to same spot
 
-function startMiniGlobeSpin(targetLng, targetLat) {
+function spinMiniGlobeTo(targetLng, targetLat) {
   stopMiniGlobeSpin();
-  miniGlobeSpinTotal = 0;
-  const spinRate = Cesium.Math.toRadians(1.2); // ~72°/sec at 60fps — one full spin in ~5s
 
-  function spin() {
+  if (!presMiniGlobeViewer || presMiniGlobeViewer.isDestroyed()) return;
+
+  // Don't re-spin if already at this target
+  const key = targetLng.toFixed(2) + ',' + targetLat.toFixed(2);
+  if (miniGlobeLastTargetKey === key) return;
+  miniGlobeLastTargetKey = key;
+
+  // Get current camera longitude from the cartographic position
+  const cam = presMiniGlobeViewer.camera;
+  const carto = cam.positionCartographic;
+  const currentLng = Cesium.Math.toDegrees(carto.longitude);
+  const currentAlt = carto.height;
+
+  // Compute shortest angular delta in longitude (-180..180)
+  let deltaLng = targetLng - currentLng;
+  while (deltaLng > 180) deltaLng -= 360;
+  while (deltaLng < -180) deltaLng += 360;
+
+  // Also need to move in latitude
+  const currentLat = Cesium.Math.toDegrees(carto.latitude);
+  const deltaLat = targetLat - currentLat;
+
+  const totalFrames = Math.max(90, Math.round(Math.abs(deltaLng) * 1.2)); // ~1.5-3s depending on distance
+  let frame = 0;
+
+  // Altitude: start at current, settle to 3,000,000m at end
+  const startAlt = currentAlt;
+  const endAlt = 3000000;
+
+  function step() {
     if (!presMiniGlobeViewer || presMiniGlobeViewer.isDestroyed()) return;
-    miniGlobeSpinTotal += spinRate;
+    frame++;
 
-    if (miniGlobeSpinTotal >= MINI_GLOBE_FULL_SPIN) {
-      // Done spinning — snap to final position looking at the marker
+    // Ease-in-out (smooth stop, no overshoot)
+    const t = frame / totalFrames;
+    const ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+
+    const lng = currentLng + deltaLng * ease;
+    const lat = currentLat + deltaLat * ease;
+    const alt = startAlt + (endAlt - startAlt) * ease;
+
+    presMiniGlobeViewer.camera.setView({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat, alt),
+      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+    });
+
+    if (frame >= totalFrames) {
       presMiniSpinRAF = null;
-      presMiniGlobeViewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(targetLng, targetLat, 3000000),
+      // Ensure final position is exact
+      presMiniGlobeViewer.camera.setView({
+        destination: Cesium.Cartesian3.fromDegrees(targetLng, targetLat, endAlt),
         orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
-        duration: 0.6,
-        easingFunction: Cesium.EasingFunction.QUADRATIC_OUT,
       });
       return;
     }
 
-    presMiniGlobeViewer.scene.camera.rotateRight(spinRate);
-    presMiniSpinRAF = requestAnimationFrame(spin);
+    presMiniSpinRAF = requestAnimationFrame(step);
   }
-  presMiniSpinRAF = requestAnimationFrame(spin);
+  presMiniSpinRAF = requestAnimationFrame(step);
 }
 
 function stopMiniGlobeSpin() {
@@ -5952,8 +6108,8 @@ function updatePresMiniGlobe(loc, label) {
       },
     });
 
-    // Spin once around, then settle on the marker
-    startMiniGlobeSpin(loc.lng, loc.lat);
+    // Smoothly rotate to the marker location (shortest path, no overshoot)
+    spinMiniGlobeTo(loc.lng, loc.lat);
   }
 }
 

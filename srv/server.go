@@ -94,6 +94,104 @@ func (s *Server) setUpDatabase(dbPath string) error {
 	return nil
 }
 
+// ---------------------------------------------------------------------------
+// Auth helpers
+// ---------------------------------------------------------------------------
+
+type authUser struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+}
+
+func getUser(r *http.Request) *authUser {
+	uid := r.Header.Get("X-ExeDev-UserID")
+	email := r.Header.Get("X-ExeDev-Email")
+	if uid == "" {
+		return nil
+	}
+	return &authUser{UserID: uid, Email: email}
+}
+
+func requireUser(w http.ResponseWriter, r *http.Request) *authUser {
+	u := getUser(r)
+	if u == nil {
+		jsonError(w, "authentication required", http.StatusUnauthorized)
+		return nil
+	}
+	return u
+}
+
+// requireTripOwner loads a trip by ID and verifies the current user owns it.
+func (s *Server) requireTripOwner(w http.ResponseWriter, r *http.Request, tripID string) (dbgen.Trip, *authUser, bool) {
+	u := requireUser(w, r)
+	if u == nil {
+		return dbgen.Trip{}, nil, false
+	}
+	q := dbgen.New(s.DB)
+	trip, err := q.GetTrip(r.Context(), tripID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "trip not found", http.StatusNotFound)
+		} else {
+			jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		}
+		return dbgen.Trip{}, nil, false
+	}
+	if trip.UserID == nil || *trip.UserID != u.UserID {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return dbgen.Trip{}, nil, false
+	}
+	return trip, u, true
+}
+
+// requireStopOwner loads a stop and verifies the current user owns its parent trip.
+func (s *Server) requireStopOwner(w http.ResponseWriter, r *http.Request, stopID string) (dbgen.Stop, *authUser, bool) {
+	u := requireUser(w, r)
+	if u == nil {
+		return dbgen.Stop{}, nil, false
+	}
+	q := dbgen.New(s.DB)
+	stop, err := q.GetStop(r.Context(), stopID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "stop not found", http.StatusNotFound)
+		} else {
+			jsonError(w, "failed to get stop", http.StatusInternalServerError)
+		}
+		return dbgen.Stop{}, nil, false
+	}
+	trip, err := q.GetTrip(r.Context(), stop.TripID)
+	if err != nil || trip.UserID == nil || *trip.UserID != u.UserID {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return dbgen.Stop{}, nil, false
+	}
+	return stop, u, true
+}
+
+// requirePhotoOwner loads a photo and verifies the current user owns its parent trip.
+func (s *Server) requirePhotoOwner(w http.ResponseWriter, r *http.Request, photoID string) (dbgen.Photo, *authUser, bool) {
+	u := requireUser(w, r)
+	if u == nil {
+		return dbgen.Photo{}, nil, false
+	}
+	q := dbgen.New(s.DB)
+	photo, err := q.GetPhoto(r.Context(), photoID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "photo not found", http.StatusNotFound)
+		} else {
+			jsonError(w, "failed to get photo", http.StatusInternalServerError)
+		}
+		return dbgen.Photo{}, nil, false
+	}
+	trip, err := q.GetTrip(r.Context(), photo.TripID)
+	if err != nil || trip.UserID == nil || *trip.UserID != u.UserID {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return dbgen.Photo{}, nil, false
+	}
+	return photo, u, true
+}
+
 // Serve starts the HTTP server with all configured routes.
 func (s *Server) Serve(addr string) error {
 	mux := http.NewServeMux()
@@ -102,6 +200,9 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /share/{shareID}", s.handleIndex)
 	mux.HandleFunc("GET /present/{shareID}", s.handleIndex)
+
+	// Auth
+	mux.HandleFunc("GET /api/me", s.handleMe)
 
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
@@ -171,10 +272,41 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, path)
 		return
 	}
+
+	// Build auth JSON for injection into the SPA
+	authInfo := map[string]any{"authenticated": false}
+	u := getUser(r)
+	if u != nil {
+		authInfo = map[string]any{
+			"authenticated": true,
+			"user_id":       u.UserID,
+			"email":         u.Email,
+		}
+	}
+	authJSON, _ := json.Marshal(authInfo)
+
+	data := map[string]any{
+		"Hostname": s.Hostname,
+		"AuthJSON": template.JS(authJSON),
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := tmpl.Execute(w, nil); err != nil {
+	if err := tmpl.Execute(w, data); err != nil {
 		slog.Warn("render index", "error", err)
 	}
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	u := getUser(r)
+	if u == nil {
+		jsonOK(w, map[string]any{"authenticated": false})
+		return
+	}
+	jsonOK(w, map[string]any{
+		"authenticated": true,
+		"user_id":       u.UserID,
+		"email":         u.Email,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -224,8 +356,19 @@ func (s *Server) buildTripDetail(r *http.Request, trip dbgen.Trip) (*tripDetail,
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleListTrips(w http.ResponseWriter, r *http.Request) {
+	u := getUser(r)
 	q := dbgen.New(s.DB)
-	trips, err := q.ListTrips(r.Context())
+	var trips []dbgen.Trip
+	var err error
+	if u != nil {
+		// Auto-claim any orphaned trips (from before auth was added)
+		_ = q.ClaimOrphanedTrips(r.Context(), &u.UserID)
+
+		trips, err = q.ListTripsByUser(r.Context(), &u.UserID)
+	} else {
+		// Unauthenticated: show nothing (they should log in)
+		trips = []dbgen.Trip{}
+	}
 	if err != nil {
 		jsonError(w, "failed to list trips", http.StatusInternalServerError)
 		return
@@ -234,6 +377,11 @@ func (s *Server) handleListTrips(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateTrip(w http.ResponseWriter, r *http.Request) {
+	u := requireUser(w, r)
+	if u == nil {
+		return
+	}
+
 	var body struct {
 		Title       string `json:"title"`
 		Description string `json:"description"`
@@ -259,6 +407,7 @@ func (s *Server) handleCreateTrip(w http.ResponseWriter, r *http.Request) {
 		Description: body.Description,
 		CreatedAt:   now,
 		UpdatedAt:   now,
+		UserID:      &u.UserID,
 	}); err != nil {
 		jsonError(w, "failed to create trip", http.StatusInternalServerError)
 		return
@@ -274,14 +423,8 @@ func (s *Server) handleCreateTrip(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetTrip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	q := dbgen.New(s.DB)
-	trip, err := q.GetTrip(r.Context(), id)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+	trip, _, ok := s.requireTripOwner(w, r, id)
+	if !ok {
 		return
 	}
 
@@ -295,6 +438,10 @@ func (s *Server) handleGetTrip(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateTrip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	existing, _, ok := s.requireTripOwner(w, r, id)
+	if !ok {
+		return
+	}
 
 	var body struct {
 		Title             string   `json:"title"`
@@ -310,17 +457,6 @@ func (s *Server) handleUpdateTrip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := dbgen.New(s.DB)
-
-	// Verify trip exists
-	existing, err := q.GetTrip(r.Context(), id)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
-		return
-	}
 
 	// Preserve existing camera defaults if not provided in this update
 	camH := body.DefaultCamHeading
@@ -360,16 +496,10 @@ func (s *Server) handleUpdateTrip(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteTrip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	q := dbgen.New(s.DB)
-
-	if _, err := q.GetTrip(r.Context(), id); err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+	if _, _, ok := s.requireTripOwner(w, r, id); !ok {
 		return
 	}
+	q := dbgen.New(s.DB)
 
 	// Delete uploaded photo files for this trip
 	photos, _ := q.ListPhotos(r.Context(), id)
@@ -415,6 +545,9 @@ func (s *Server) handleGetTripByShareID(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleUpdatePresentSlug(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, _, ok := s.requireTripOwner(w, r, id); !ok {
+		return
+	}
 
 	var body struct {
 		Slug string `json:"slug"`
@@ -443,16 +576,6 @@ func (s *Server) handleUpdatePresentSlug(w http.ResponseWriter, r *http.Request)
 	}
 
 	q := dbgen.New(s.DB)
-
-	// Check trip exists
-	if _, err := q.GetTrip(r.Context(), id); err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
-		return
-	}
 
 	// Check uniqueness (try to find another trip with this slug)
 	existing, err := q.GetTripByPresentSlug(r.Context(), &slug)
@@ -555,6 +678,9 @@ func (s *Server) handleCreateCommentByPresent(w http.ResponseWriter, r *http.Req
 
 func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 	tripID := r.PathValue("id")
+	if _, _, ok := s.requireTripOwner(w, r, tripID); !ok {
+		return
+	}
 
 	var body struct {
 		Title       string     `json:"title"`
@@ -571,7 +697,7 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 
 	q := dbgen.New(s.DB)
 
-	// Verify trip exists
+	// Verify trip exists (already done by requireTripOwner but need err block structure)
 	if _, err := q.GetTrip(r.Context(), tripID); err != nil {
 		if err == sql.ErrNoRows {
 			jsonError(w, "trip not found", http.StatusNotFound)
@@ -627,6 +753,9 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateStop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, _, ok := s.requireStopOwner(w, r, id); !ok {
+		return
+	}
 
 	var body struct {
 		Title        string     `json:"title"`
@@ -715,6 +844,9 @@ func (s *Server) handleUpdateStop(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteStop(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, _, ok := s.requireStopOwner(w, r, id); !ok {
+		return
+	}
 	q := dbgen.New(s.DB)
 
 	if _, err := q.GetStop(r.Context(), id); err != nil {
@@ -771,18 +903,11 @@ func imageDimensions(data []byte) (int, int) {
 
 func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	tripID := r.PathValue("id")
-
-	q := dbgen.New(s.DB)
-
-	// Verify trip exists
-	if _, err := q.GetTrip(r.Context(), tripID); err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+	if _, _, ok := s.requireTripOwner(w, r, tripID); !ok {
 		return
 	}
+
+	q := dbgen.New(s.DB)
 
 	// Parse multipart form (32 MB max)
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
@@ -889,6 +1014,9 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdatePhoto(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, _, ok := s.requirePhotoOwner(w, r, id); !ok {
+		return
+	}
 
 	var body struct {
 		StopID     *string  `json:"stop_id"`
@@ -939,6 +1067,9 @@ func (s *Server) handleUpdatePhoto(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, _, ok := s.requirePhotoOwner(w, r, id); !ok {
+		return
+	}
 	q := dbgen.New(s.DB)
 
 	photo, err := q.GetPhoto(r.Context(), id)
@@ -968,6 +1099,9 @@ func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRescanPhoto(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if _, _, ok := s.requirePhotoOwner(w, r, id); !ok {
+		return
+	}
 	ctx := r.Context()
 	q := dbgen.New(s.DB)
 
@@ -1121,18 +1255,12 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleResetTrip(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ctx := r.Context()
-	q := dbgen.New(s.DB)
-
-	trip, err := q.GetTrip(ctx, id)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+	trip, _, ok := s.requireTripOwner(w, r, id)
+	if !ok {
 		return
 	}
+	ctx := r.Context()
+	q := dbgen.New(s.DB)
 
 	// Delete photo files from disk
 	photos, _ := q.ListPhotos(ctx, trip.ID)
@@ -1262,18 +1390,12 @@ func (c *photoCluster) addPhoto(p dbgen.Photo) {
 
 func (s *Server) handleAutoStops(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	ctx := r.Context()
-	q := dbgen.New(s.DB)
-
-	trip, err := q.GetTrip(ctx, id)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+	trip, _, ok := s.requireTripOwner(w, r, id)
+	if !ok {
 		return
 	}
+	ctx := r.Context()
+	q := dbgen.New(s.DB)
 
 	// Remove existing stops and stop assignments
 	q.DeleteStopsByTrip(ctx, id)
@@ -1399,16 +1521,10 @@ func (s *Server) handleAutoStops(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListCommentsByTrip(w http.ResponseWriter, r *http.Request) {
 	tripID := r.PathValue("id")
-	q := dbgen.New(s.DB)
-
-	if _, err := q.GetTrip(r.Context(), tripID); err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+	if _, _, ok := s.requireTripOwner(w, r, tripID); !ok {
 		return
 	}
+	q := dbgen.New(s.DB)
 
 	comments, err := q.ListCommentsByTrip(r.Context(), tripID)
 	if err != nil {
@@ -1442,6 +1558,9 @@ func (s *Server) handleListCommentsByShare(w http.ResponseWriter, r *http.Reques
 
 func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	photoID := r.PathValue("photoID")
+	if _, _, ok := s.requirePhotoOwner(w, r, photoID); !ok {
+		return
+	}
 	ctx := r.Context()
 	q := dbgen.New(s.DB)
 
@@ -1551,6 +1670,10 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request, tripID, p
 }
 
 func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	u := requireUser(w, r)
+	if u == nil {
+		return
+	}
 	id := r.PathValue("id")
 	q := dbgen.New(s.DB)
 
@@ -1659,18 +1782,11 @@ func gpxToGeoJSON(data []byte) (string, string, error) {
 
 func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 	tripID := r.PathValue("id")
-
-	q := dbgen.New(s.DB)
-
-	// Verify trip exists
-	if _, err := q.GetTrip(r.Context(), tripID); err != nil {
-		if err == sql.ErrNoRows {
-			jsonError(w, "trip not found", http.StatusNotFound)
-			return
-		}
-		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+	if _, _, ok := s.requireTripOwner(w, r, tripID); !ok {
 		return
 	}
+
+	q := dbgen.New(s.DB)
 
 	contentType := r.Header.Get("Content-Type")
 
@@ -1762,6 +1878,10 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
+	u := requireUser(w, r)
+	if u == nil {
+		return
+	}
 	id := r.PathValue("id")
 	q := dbgen.New(s.DB)
 
