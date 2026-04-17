@@ -122,6 +122,10 @@ func (s *Server) Serve(addr string) error {
 	// Share (public)
 	mux.HandleFunc("GET /api/share/{shareID}", s.handleGetTripByShareID)
 
+	// Present slug
+	mux.HandleFunc("PUT /api/trips/{id}/present-slug", s.handleUpdatePresentSlug)
+	mux.HandleFunc("GET /api/present/{slug}", s.handleGetTripByPresentSlug)
+
 	// Stop CRUD
 	mux.HandleFunc("POST /api/trips/{id}/stops", s.handleCreateStop)
 	mux.HandleFunc("PUT /api/stops/{id}", s.handleUpdateStop)
@@ -140,6 +144,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/trips/{id}/comments", s.handleListCommentsByTrip)
 	mux.HandleFunc("GET /api/share/{shareID}/comments", s.handleListCommentsByShare)
 	mux.HandleFunc("POST /api/share/{shareID}/photos/{photoID}/comments", s.handleCreateCommentByShare)
+	mux.HandleFunc("POST /api/present/{slug}/photos/{photoID}/comments", s.handleCreateCommentByPresent)
 	mux.HandleFunc("POST /api/photos/{photoID}/comments", s.handleCreateComment)
 	mux.HandleFunc("DELETE /api/comments/{id}", s.handleDeleteComment)
 
@@ -402,6 +407,146 @@ func (s *Server) handleGetTripByShareID(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	jsonOK(w, detail)
+}
+
+// ---------------------------------------------------------------------------
+// Present Slug
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleUpdatePresentSlug(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var body struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate slug
+	slug := strings.TrimSpace(body.Slug)
+	if slug == "" {
+		jsonError(w, "slug is required", http.StatusBadRequest)
+		return
+	}
+	if len(slug) > 80 {
+		jsonError(w, "slug must be 80 characters or fewer", http.StatusBadRequest)
+		return
+	}
+	// Only allow URL-safe characters
+	for _, c := range slug {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			jsonError(w, "slug may only contain letters, numbers, hyphens, and underscores", http.StatusBadRequest)
+			return
+		}
+	}
+
+	q := dbgen.New(s.DB)
+
+	// Check trip exists
+	if _, err := q.GetTrip(r.Context(), id); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "trip not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		return
+	}
+
+	// Check uniqueness (try to find another trip with this slug)
+	existing, err := q.GetTripByPresentSlug(r.Context(), &slug)
+	if err == nil && existing.ID != id {
+		jsonError(w, "this presentation name is already taken", http.StatusConflict)
+		return
+	}
+
+	if err := q.UpdatePresentSlug(r.Context(), dbgen.UpdatePresentSlugParams{
+		PresentSlug: &slug,
+		UpdatedAt:   time.Now(),
+		ID:          id,
+	}); err != nil {
+		jsonError(w, "failed to update presentation slug", http.StatusInternalServerError)
+		return
+	}
+
+	trip, err := q.GetTrip(r.Context(), id)
+	if err != nil {
+		jsonError(w, "failed to read updated trip", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, trip)
+}
+
+func (s *Server) handleGetTripByPresentSlug(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	q := dbgen.New(s.DB)
+
+	// Try present_slug first, then fall back to share_id
+	trip, err := q.GetTripByPresentSlug(r.Context(), &slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Fallback: try share_id for backward compat
+			trip, err = q.GetTripByShareID(r.Context(), slug)
+			if err != nil {
+				jsonError(w, "presentation not found", http.StatusNotFound)
+				return
+			}
+		} else {
+			jsonError(w, "failed to get trip", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	detail, err := s.buildTripDetail(r, trip)
+	if err != nil {
+		jsonError(w, "failed to load trip details", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, detail)
+}
+
+// resolveTrip finds a trip by present_slug first, then share_id as fallback
+func (s *Server) resolveTripBySlugOrShareID(r *http.Request, slug string) (dbgen.Trip, error) {
+	q := dbgen.New(s.DB)
+	trip, err := q.GetTripByPresentSlug(r.Context(), &slug)
+	if err == nil {
+		return trip, nil
+	}
+	if err == sql.ErrNoRows {
+		return q.GetTripByShareID(r.Context(), slug)
+	}
+	return trip, err
+}
+
+func (s *Server) handleCreateCommentByPresent(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	photoID := r.PathValue("photoID")
+	ctx := r.Context()
+
+	trip, err := s.resolveTripBySlugOrShareID(r, slug)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "presentation not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "failed to get trip", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify photo belongs to the trip
+	q := dbgen.New(s.DB)
+	photo, err := q.GetPhoto(ctx, photoID)
+	if err != nil {
+		jsonError(w, "photo not found", http.StatusNotFound)
+		return
+	}
+	if photo.TripID != trip.ID {
+		jsonError(w, "photo does not belong to this trip", http.StatusForbidden)
+		return
+	}
+
+	s.createComment(w, r, trip.ID, photoID)
 }
 
 // ---------------------------------------------------------------------------

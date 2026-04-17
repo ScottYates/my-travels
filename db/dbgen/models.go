@@ -81,6 +81,7 @@ type Trip struct {
 	DefaultCamHeading *float64  `json:"default_cam_heading"`
 	DefaultCamPitch   *float64  `json:"default_cam_pitch"`
 	DefaultCamRange   *float64  `json:"default_cam_range"`
+	PresentSlug       *string   `json:"present_slug"`
 }
 
 type Visitor struct {

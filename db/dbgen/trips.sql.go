@@ -324,7 +324,7 @@ func (q *Queries) GetStop(ctx context.Context, id string) (Stop, error) {
 }
 
 const getTrip = `-- name: GetTrip :one
-SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range FROM trips WHERE id = ?
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips WHERE id = ?
 `
 
 func (q *Queries) GetTrip(ctx context.Context, id string) (Trip, error) {
@@ -341,12 +341,36 @@ func (q *Queries) GetTrip(ctx context.Context, id string) (Trip, error) {
 		&i.DefaultCamHeading,
 		&i.DefaultCamPitch,
 		&i.DefaultCamRange,
+		&i.PresentSlug,
+	)
+	return i, err
+}
+
+const getTripByPresentSlug = `-- name: GetTripByPresentSlug :one
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips WHERE present_slug = ?
+`
+
+func (q *Queries) GetTripByPresentSlug(ctx context.Context, presentSlug *string) (Trip, error) {
+	row := q.db.QueryRowContext(ctx, getTripByPresentSlug, presentSlug)
+	var i Trip
+	err := row.Scan(
+		&i.ID,
+		&i.ShareID,
+		&i.Title,
+		&i.Description,
+		&i.CoverPhotoID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DefaultCamHeading,
+		&i.DefaultCamPitch,
+		&i.DefaultCamRange,
+		&i.PresentSlug,
 	)
 	return i, err
 }
 
 const getTripByShareID = `-- name: GetTripByShareID :one
-SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range FROM trips WHERE share_id = ?
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips WHERE share_id = ?
 `
 
 func (q *Queries) GetTripByShareID(ctx context.Context, shareID string) (Trip, error) {
@@ -363,6 +387,7 @@ func (q *Queries) GetTripByShareID(ctx context.Context, shareID string) (Trip, e
 		&i.DefaultCamHeading,
 		&i.DefaultCamPitch,
 		&i.DefaultCamRange,
+		&i.PresentSlug,
 	)
 	return i, err
 }
@@ -646,7 +671,7 @@ func (q *Queries) ListStops(ctx context.Context, tripID string) ([]Stop, error) 
 }
 
 const listTrips = `-- name: ListTrips :many
-SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range FROM trips ORDER BY updated_at DESC
+SELECT id, share_id, title, description, cover_photo_id, created_at, updated_at, default_cam_heading, default_cam_pitch, default_cam_range, present_slug FROM trips ORDER BY updated_at DESC
 `
 
 func (q *Queries) ListTrips(ctx context.Context) ([]Trip, error) {
@@ -669,6 +694,7 @@ func (q *Queries) ListTrips(ctx context.Context) ([]Trip, error) {
 			&i.DefaultCamHeading,
 			&i.DefaultCamPitch,
 			&i.DefaultCamRange,
+			&i.PresentSlug,
 		); err != nil {
 			return nil, err
 		}
@@ -748,6 +774,21 @@ func (q *Queries) UpdatePhoto(ctx context.Context, arg UpdatePhotoParams) error 
 		arg.CamRange,
 		arg.ID,
 	)
+	return err
+}
+
+const updatePresentSlug = `-- name: UpdatePresentSlug :exec
+UPDATE trips SET present_slug = ?, updated_at = ? WHERE id = ?
+`
+
+type UpdatePresentSlugParams struct {
+	PresentSlug *string   `json:"present_slug"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+}
+
+func (q *Queries) UpdatePresentSlug(ctx context.Context, arg UpdatePresentSlugParams) error {
+	_, err := q.db.ExecContext(ctx, updatePresentSlug, arg.PresentSlug, arg.UpdatedAt, arg.ID)
 	return err
 }
 

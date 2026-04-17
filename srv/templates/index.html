@@ -1741,7 +1741,12 @@ body.readonly .edit-only { display: none !important; }
         <input type="text" id="shareUrl" readonly>
         <button class="btn btn-secondary btn-sm" id="copyShareBtn">Copy</button>
       </div>
-      <div style="margin-top:8px">
+      <div style="margin-top:8px" class="edit-only">
+        <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Presentation Name</div>
+        <div class="share-url-row" style="margin-bottom:6px">
+          <input type="text" id="presentSlugInput" placeholder="my-trip-name" style="font-family:monospace;font-size:12px">
+          <button class="btn btn-sm" id="savePresentSlug" style="background:var(--accent);color:#fff">Save</button>
+        </div>
         <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Presentation Link</div>
         <div class="share-url-row">
           <input type="text" id="presentShareUrl" readonly>
@@ -1828,6 +1833,7 @@ const state = window._state = {
   readOnly: false,
   shareID: null,
   presentOnly: false,
+  presentSlug: null,
   drawMode: false,
   drawPoints: [],
   geotagMode: false,
@@ -1850,7 +1856,7 @@ if (pathParts[1] === 'share' && pathParts[2]) {
 }
 if (pathParts[1] === 'present' && pathParts[2]) {
   state.readOnly = true;
-  state.shareID = pathParts[2];
+  state.presentSlug = pathParts[2];
   state.presentOnly = true;
   document.body.classList.add('readonly');
 }
@@ -3339,7 +3345,9 @@ function initMap() {
   }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
 
   // Load data
-  if (state.shareID) {
+  if (state.presentSlug) {
+    loadPresentTrip(state.presentSlug);
+  } else if (state.shareID) {
     loadSharedTrip(state.shareID);
   } else {
     loadTrips();
@@ -3661,7 +3669,12 @@ async function loadTrip(id) {
     $('#breadcrumb').textContent = trip.title;
     shareUrl.value = window.location.origin + '/share/' + trip.share_id;
     const presentShareUrlEl = $('#presentShareUrl');
-    if (presentShareUrlEl) presentShareUrlEl.value = window.location.origin + '/present/' + trip.share_id;
+    const presentSlugInput = $('#presentSlugInput');
+    if (presentSlugInput) presentSlugInput.value = trip.present_slug || '';
+    if (presentShareUrlEl) {
+      const presentId = trip.present_slug || trip.share_id;
+      presentShareUrlEl.value = window.location.origin + '/present/' + presentId;
+    }
     showView('detail');
     renderTripDetail();
     renderMapData();
@@ -3679,23 +3692,37 @@ async function loadSharedTrip(shareId) {
     state.currentTrip = trip;
     $('#breadcrumb').textContent = trip.title;
     navBar.classList.add('active');
-    // hide back button in share mode
     $('#backBtn').style.display = 'none';
     showView('detail');
     renderTripDetail();
     renderMapData();
-    // Auto-start presentation in present-only mode
-    if (state.presentOnly) {
-      setTimeout(() => startPresentation(), 500);
-    }
   } catch (err) {
     toast('Trip not found', 'error');
   }
 }
 
+async function loadPresentTrip(slug) {
+  try {
+    const trip = await api('GET', '/api/present/' + slug);
+    state.currentTrip = trip;
+    $('#breadcrumb').textContent = trip.title;
+    navBar.classList.add('active');
+    $('#backBtn').style.display = 'none';
+    showView('detail');
+    renderTripDetail();
+    renderMapData();
+    // Auto-start presentation in present-only mode
+    setTimeout(() => startPresentation(), 500);
+  } catch (err) {
+    toast('Presentation not found', 'error');
+  }
+}
+
 async function reloadCurrentTrip() {
   if (!state.currentTrip) return;
-  if (state.readOnly && state.shareID) {
+  if (state.presentSlug) {
+    await loadPresentTrip(state.presentSlug);
+  } else if (state.readOnly && state.shareID) {
     await loadSharedTrip(state.shareID);
   } else {
     await loadTrip(state.currentTrip.id);
@@ -5536,6 +5563,25 @@ $('#copyPresentBtn').addEventListener('click', () => {
   });
 });
 
+$('#savePresentSlug').addEventListener('click', async () => {
+  const trip = state.currentTrip;
+  if (!trip) return;
+  const slug = $('#presentSlugInput').value.trim();
+  if (!slug) {
+    toast('Enter a name for your presentation', 'error');
+    return;
+  }
+  try {
+    const updated = await api('PUT', '/api/trips/' + trip.id + '/present-slug', { slug: slug });
+    state.currentTrip.present_slug = updated.present_slug;
+    const presentId = updated.present_slug || trip.share_id;
+    $('#presentShareUrl').value = window.location.origin + '/present/' + presentId;
+    toast('Presentation name saved!');
+  } catch (err) {
+    toast(err.message || 'Failed to save', 'error');
+  }
+});
+
 // ---------------------------------------------------------------
 // Keyboard shortcuts
 // ---------------------------------------------------------------
@@ -5851,15 +5897,31 @@ function destroyPresMiniGlobe() {
   presMiniLabel.textContent = '';
 }
 
-let miniGlobeTargetLng = null;
-let miniGlobeTargetLat = null;
+let miniGlobeSpinTotal = 0; // accumulated rotation in radians
+const MINI_GLOBE_FULL_SPIN = Cesium.Math.TWO_PI; // one full rotation
 
-function startMiniGlobeSpin() {
+function startMiniGlobeSpin(targetLng, targetLat) {
   stopMiniGlobeSpin();
-  const spinRate = 0.3; // degrees per frame (~18°/sec at 60fps)
+  miniGlobeSpinTotal = 0;
+  const spinRate = Cesium.Math.toRadians(1.2); // ~72°/sec at 60fps — one full spin in ~5s
+
   function spin() {
     if (!presMiniGlobeViewer || presMiniGlobeViewer.isDestroyed()) return;
-    presMiniGlobeViewer.scene.camera.rotateRight(Cesium.Math.toRadians(spinRate));
+    miniGlobeSpinTotal += spinRate;
+
+    if (miniGlobeSpinTotal >= MINI_GLOBE_FULL_SPIN) {
+      // Done spinning — snap to final position looking at the marker
+      presMiniSpinRAF = null;
+      presMiniGlobeViewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(targetLng, targetLat, 3000000),
+        orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+        duration: 0.6,
+        easingFunction: Cesium.EasingFunction.QUADRATIC_OUT,
+      });
+      return;
+    }
+
+    presMiniGlobeViewer.scene.camera.rotateRight(spinRate);
     presMiniSpinRAF = requestAnimationFrame(spin);
   }
   presMiniSpinRAF = requestAnimationFrame(spin);
@@ -5875,14 +5937,10 @@ function stopMiniGlobeSpin() {
 function updatePresMiniGlobe(loc, label) {
   if (!presMiniGlobeViewer || presMiniGlobeViewer.isDestroyed()) return;
 
-  // Update label
   presMiniLabel.textContent = label || '';
-
-  // Remove old entities
   presMiniGlobeViewer.entities.removeAll();
 
   if (loc) {
-    // Add marker
     presMiniGlobeViewer.entities.add({
       position: Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat),
       point: {
@@ -5894,18 +5952,8 @@ function updatePresMiniGlobe(loc, label) {
       },
     });
 
-    // Fly to location (zoomed out more: 3,000,000m altitude)
-    stopMiniGlobeSpin();
-    presMiniGlobeViewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(loc.lng, loc.lat, 3000000),
-      orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
-      duration: 1.5,
-      easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
-      complete: function() {
-        // Resume spinning after arrival
-        startMiniGlobeSpin();
-      },
-    });
+    // Spin once around, then settle on the marker
+    startMiniGlobeSpin(loc.lng, loc.lat);
   }
 }
 
@@ -5965,7 +6013,9 @@ async function submitPresComment() {
 
   try {
     let comment;
-    if (state.shareID) {
+    if (state.presentSlug) {
+      comment = await api('POST', '/api/present/' + state.presentSlug + '/photos/' + photoId + '/comments', { body: body, author: '' });
+    } else if (state.shareID) {
       comment = await api('POST', '/api/share/' + state.shareID + '/photos/' + photoId + '/comments', { body: body, author: '' });
     } else {
       comment = await api('POST', '/api/photos/' + photoId + '/comments', { body: body, author: '' });

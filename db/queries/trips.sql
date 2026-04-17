@@ -104,3 +104,9 @@ SELECT * FROM comments WHERE trip_id = ? ORDER BY created_at ASC;
 
 -- name: DeleteComment :exec
 DELETE FROM comments WHERE id = ?;
+
+-- name: GetTripByPresentSlug :one
+SELECT * FROM trips WHERE present_slug = ?;
+
+-- name: UpdatePresentSlug :exec
+UPDATE trips SET present_slug = ?, updated_at = ? WHERE id = ?;
