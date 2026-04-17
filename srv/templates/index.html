@@ -4548,7 +4548,7 @@ function renderMapData() {
         height: 36,
         verticalOrigin: Cesium.VerticalOrigin.CENTER,
         heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        disableDepthTestDistance: 100000,
       },
 
     });
@@ -4572,7 +4572,7 @@ function renderMapData() {
         outlineColor: Cesium.Color.fromCssColorString('#3b82f6'),
         outlineWidth: 3,
         heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        disableDepthTestDistance: 100000,
       }
     });
     photoEntity._isTripData = true;
@@ -4615,7 +4615,7 @@ function renderMapData() {
           height: 44,
           verticalOrigin: Cesium.VerticalOrigin.CENTER,
           heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          disableDepthTestDistance: 100000,
         });
         if (entity.point) entity.point.show = false;
         viewer.scene.requestRender();
