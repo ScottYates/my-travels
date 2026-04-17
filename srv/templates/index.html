@@ -1480,6 +1480,40 @@ body.readonly .edit-only { display: none !important; }
   cursor: default;
 }
 
+/* Mini globe overlay on photo slides */
+.pres-mini-globe {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 160px;
+  height: 160px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid rgba(255,255,255,0.5);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+  z-index: 15;
+  pointer-events: none;
+  opacity: 0;
+  animation: miniGlobeFadeIn 0.6s ease 0.3s forwards;
+}
+@keyframes miniGlobeFadeIn {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+.pres-mini-globe .cesium-viewer,
+.pres-mini-globe .cesium-viewer-cesiumWidgetContainer,
+.pres-mini-globe .cesium-widget,
+.pres-mini-globe .cesium-widget canvas {
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 50%;
+}
+/* Hide any credit/toolbar inside mini globe */
+.pres-mini-globe .cesium-viewer-toolbar,
+.pres-mini-globe .cesium-viewer-bottom {
+  display: none !important;
+}
+
 /* Fullscreen adjustments */
 #presentationOverlay:-webkit-full-screen { display: flex; }
 #presentationOverlay:fullscreen { display: flex; }
@@ -5425,7 +5459,9 @@ const presNext = $('#presNext');
 let presSlides = [];   // array of { type: 'photo'|'globe', photo?, stop?, stopTitle?, location?, date? }
 let presIndex = 0;
 let presGlobeViewer = null;
+let presMiniGlobeViewer = null;
 let presActive = false;
+const presImageCache = new Map(); // filename -> Image element
 
 function buildPresentationSlides() {
   const trip = state.currentTrip;
@@ -5527,9 +5563,29 @@ function stopPresentation() {
     presGlobeViewer = null;
   }
 
+  // Destroy mini globe
+  destroyPresMiniGlobe();
+
+  // Clear pre-cache
+  presImageCache.clear();
+
   // Exit fullscreen
   if (document.fullscreenElement || document.webkitFullscreenElement) {
     (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+  }
+}
+
+function presCacheAhead(fromIdx) {
+  // Pre-cache the next 2 photo slides after fromIdx
+  let cached = 0;
+  for (let i = fromIdx + 1; i < presSlides.length && cached < 2; i++) {
+    const s = presSlides[i];
+    if (s.type === 'photo' && s.photo && !presImageCache.has(s.photo.filename)) {
+      const img = new Image();
+      img.src = '/uploads/' + s.photo.filename;
+      presImageCache.set(s.photo.filename, img);
+      cached++;
+    }
   }
 }
 
@@ -5550,6 +5606,9 @@ function showPresSlide(idx) {
   } else {
     showPresPhoto(slide);
   }
+
+  // Pre-cache upcoming photo images
+  presCacheAhead(idx);
 }
 
 function showPresPhoto(slide) {
@@ -5558,15 +5617,31 @@ function showPresPhoto(slide) {
     try { presGlobeViewer.destroy(); } catch(e) {}
     presGlobeViewer = null;
   }
+  // Destroy previous mini globe
+  destroyPresMiniGlobe();
+
   presContent.innerHTML = '';
   const container = document.createElement('div');
   container.className = 'pres-photo-slide active';
+
+  // Use pre-cached image if available
   const img = document.createElement('img');
-  img.src = '/uploads/' + slide.photo.filename;
+  const cached = presImageCache.get(slide.photo.filename);
+  if (cached && cached.complete && cached.naturalWidth > 0) {
+    img.src = cached.src;
+  } else {
+    img.src = '/uploads/' + slide.photo.filename;
+  }
   img.alt = slide.caption || '';
   img.draggable = false;
   container.appendChild(img);
   presContent.appendChild(container);
+
+  // Mini globe overlay showing photo/stop location
+  const loc = getSlideLocation(slide);
+  if (loc) {
+    initPresMiniGlobe(container, loc.lng, loc.lat);
+  }
 
   // Caption / date / stop
   let capHtml = '';
@@ -5579,7 +5654,93 @@ function showPresPhoto(slide) {
   presBottom.style.display = '';
 }
 
+function getSlideLocation(slide) {
+  // Prefer photo coordinates, fall back to stop coordinates
+  if (slide.photo && slide.photo.lat != null && slide.photo.lng != null) {
+    return { lat: slide.photo.lat, lng: slide.photo.lng };
+  }
+  if (slide.stop && slide.stop.lat != null && slide.stop.lng != null) {
+    return { lat: slide.stop.lat, lng: slide.stop.lng };
+  }
+  return null;
+}
+
+function destroyPresMiniGlobe() {
+  if (presMiniGlobeViewer) {
+    try { presMiniGlobeViewer.destroy(); } catch(e) {}
+    presMiniGlobeViewer = null;
+  }
+}
+
+function initPresMiniGlobe(parentEl, lng, lat) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'pres-mini-globe';
+  const globeDiv = document.createElement('div');
+  globeDiv.style.width = '100%';
+  globeDiv.style.height = '100%';
+  wrapper.appendChild(globeDiv);
+  parentEl.appendChild(wrapper);
+
+  Cesium.Ion.defaultAccessToken = '';
+  presMiniGlobeViewer = new Cesium.Viewer(globeDiv, {
+    baseLayer: false,
+    baseLayerPicker: false,
+    geocoder: false,
+    homeButton: false,
+    sceneModePicker: false,
+    selectionIndicator: false,
+    navigationHelpButton: false,
+    animation: false,
+    timeline: false,
+    fullscreenButton: false,
+    vrButton: false,
+    infoBox: false,
+    creditContainer: document.createElement('div'),
+    skyAtmosphere: new Cesium.SkyAtmosphere(),
+    requestRenderMode: false,
+    scene3DOnly: true,
+  });
+
+  // Add satellite imagery
+  Cesium.ArcGisMapServerImageryProvider.fromUrl(
+    'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer'
+  ).then(function(provider) {
+    if (presMiniGlobeViewer) presMiniGlobeViewer.imageryLayers.addImageryProvider(provider);
+  }).catch(function() {});
+
+  // Disable all interaction
+  const ctrl = presMiniGlobeViewer.scene.screenSpaceCameraController;
+  ctrl.enableRotate = false;
+  ctrl.enableZoom = false;
+  ctrl.enableTranslate = false;
+  ctrl.enableTilt = false;
+  ctrl.enableLook = false;
+
+  presMiniGlobeViewer.scene.postProcessStages.fxaa.enabled = false;
+  presMiniGlobeViewer.scene.globe.enableLighting = false;
+
+  // Add a pin marker
+  presMiniGlobeViewer.entities.add({
+    position: Cesium.Cartesian3.fromDegrees(lng, lat),
+    point: {
+      pixelSize: 8,
+      color: Cesium.Color.fromCssColorString('#f59e0b'),
+      outlineColor: Cesium.Color.WHITE,
+      outlineWidth: 2,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY,
+    },
+  });
+
+  // Set camera to look down at location
+  presMiniGlobeViewer.camera.setView({
+    destination: Cesium.Cartesian3.fromDegrees(lng, lat, 800000),
+    orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+  });
+}
+
 function showPresGlobe(slide) {
+  // Destroy mini globe from photo slide
+  destroyPresMiniGlobe();
   presContent.innerHTML = '';
   const container = document.createElement('div');
   container.className = 'pres-globe-slide active';
