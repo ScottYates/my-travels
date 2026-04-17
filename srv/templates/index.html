@@ -3034,7 +3034,7 @@ function onCesiumClick(screenPos) {
       // Fly to stop location (no popup) — offset camera south so markers are visible
       const s = entity._stopData;
       const camHeight = 12000;
-      const latOffset = (camHeight / 111320) * 0.7;
+      const latOffset = camHeight / 111320;
       const dest = Cesium.Cartesian3.fromDegrees(s.lng, s.lat - latOffset, camHeight);
       const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
       viewer.camera.flyTo({ destination: dest, orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: d, easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT });
@@ -3537,7 +3537,7 @@ function wireDetailEvents() {
       if (stop) {
         // Offset camera south so the stop markers are visible ahead with -45° pitch
         const camHeight = 12000;
-        const latOffset = (camHeight / 111320) * 0.7; // move camera south so stop is in center of view
+        const latOffset = camHeight / 111320; // tan(45°)=1, so offset = height
         const dest = Cesium.Cartesian3.fromDegrees(stop.lng, stop.lat - latOffset, camHeight);
         const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
         viewer.camera.flyTo({ destination: dest, orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: d, easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT });
@@ -5014,7 +5014,7 @@ function renderTimeline() {
       const lng = parseFloat(card.dataset.lng);
       if (!isNaN(lat) && !isNaN(lng)) {
         const camHeight = 12000;
-        const latOff = (camHeight / 111320) * 0.7;
+        const latOff = camHeight / 111320;
         const dest = Cesium.Cartesian3.fromDegrees(lng, lat - latOff, camHeight);
         const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
         viewer.camera.flyTo({
