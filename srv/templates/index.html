@@ -825,10 +825,37 @@ textarea.form-input {
 
 /* Share bar */
 .share-bar {
-  padding: 16px 24px;
+  padding: 0 24px;
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
+.share-bar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  cursor: pointer;
+  user-select: none;
+}
+.share-bar-toggle:hover { opacity: 0.8; }
+.share-bar-toggle .share-bar-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.share-bar-toggle .share-bar-arrow {
+  font-size: 10px;
+  color: var(--text-muted);
+  transition: transform 0.2s;
+}
+.share-bar.open .share-bar-arrow { transform: rotate(180deg); }
+.share-bar-body {
+  display: none;
+  padding-bottom: 16px;
+}
+.share-bar.open .share-bar-body { display: block; }
 
 .share-url-row {
   display: flex;
@@ -1950,21 +1977,27 @@ body.no-auth .readonly-badge { display: none !important; }
     </div>
 
     <div class="share-bar" id="shareBar" style="display:none">
-      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px">Share Link</div>
-      <div class="share-url-row">
-        <input type="text" id="shareUrl" readonly>
-        <button class="btn btn-secondary btn-sm" id="copyShareBtn">Copy</button>
+      <div class="share-bar-toggle" id="shareBarToggle">
+        <span class="share-bar-label">🔗 Share &amp; Presentation Links</span>
+        <span class="share-bar-arrow">▼</span>
       </div>
-      <div style="margin-top:8px" class="edit-only">
-        <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Presentation Name</div>
-        <div class="share-url-row" style="margin-bottom:6px">
-          <input type="text" id="presentSlugInput" placeholder="my-trip-name" style="font-family:monospace;font-size:12px">
-          <button class="btn btn-sm" id="savePresentSlug" style="background:var(--accent);color:#fff">Save</button>
-        </div>
-        <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Presentation Link</div>
+      <div class="share-bar-body">
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Share Link</div>
         <div class="share-url-row">
-          <input type="text" id="presentShareUrl" readonly>
-          <button class="btn btn-secondary btn-sm" id="copyPresentBtn">Copy</button>
+          <input type="text" id="shareUrl" readonly>
+          <button class="btn btn-secondary btn-sm" id="copyShareBtn">Copy</button>
+        </div>
+        <div style="margin-top:8px" class="edit-only">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Presentation Name</div>
+          <div class="share-url-row" style="margin-bottom:6px">
+            <input type="text" id="presentSlugInput" placeholder="my-trip-name" style="font-family:monospace;font-size:12px">
+            <button class="btn btn-sm" id="savePresentSlug" style="background:var(--accent);color:#fff">Save</button>
+          </div>
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Presentation Link</div>
+          <div class="share-url-row">
+            <input type="text" id="presentShareUrl" readonly>
+            <button class="btn btn-secondary btn-sm" id="copyPresentBtn">Copy</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2105,6 +2138,8 @@ const timelineContent = $('#timelineContent');
 const shareBar = $('#shareBar');
 const shareUrl = $('#shareUrl');
 const toastContainer = $('#toastContainer');
+
+$('#shareBarToggle').addEventListener('click', () => shareBar.classList.toggle('open'));
 
 // ---------------------------------------------------------------
 // User info / login (Google OAuth redirect flow)
@@ -5915,6 +5950,20 @@ function getSavedAuthorName() {
 function setSavedAuthorName(name) {
   localStorage.setItem('commentAuthor', name);
 }
+function getEffectiveAuthor(inputEl) {
+  // If logged in, use email; otherwise use the input value
+  if (currentUser && currentUser.email) return currentUser.email;
+  return inputEl ? inputEl.value.trim() : getSavedAuthorName();
+}
+function initAuthorInput(inputEl) {
+  // If logged in, hide the author input; otherwise show it with saved name
+  if (currentUser && currentUser.email) {
+    inputEl.style.display = 'none';
+  } else {
+    inputEl.style.display = '';
+    inputEl.value = getSavedAuthorName();
+  }
+}
 
 // Determine if current user is the trip owner (can edit/delete comments)
 function isOwner() {
@@ -5983,8 +6032,8 @@ const pmCommentsList = $('#photoModalCommentsList');
 const pmAuthorInput = $('#pmAuthorInput');
 const pmBodyInput = $('#pmBodyInput');
 
-// Restore saved author name
-pmAuthorInput.value = getSavedAuthorName();
+// Set up author input: hide if logged in, show with saved name if not
+initAuthorInput(pmAuthorInput);
 
 function renderPhotoModalComments() {
   const photoId = state.selectedPhotoId;
@@ -6020,8 +6069,8 @@ async function submitPhotoModalComment() {
   if (!body) return;
   const photoId = state.selectedPhotoId;
   if (!photoId) return;
-  const author = pmAuthorInput.value.trim();
-  setSavedAuthorName(author);
+  const author = getEffectiveAuthor(pmAuthorInput);
+  if (!currentUser) setSavedAuthorName(author);
   try {
     await postComment(photoId, author, body);
     pmBodyInput.value = '';
@@ -6107,8 +6156,8 @@ const presCommentsList = $('#presCommentsList');
 const presCommentInput = $('#presCommentInput');
 const presAuthorInput = $('#presAuthorInput');
 
-// Restore saved author name in presentation comment form
-presAuthorInput.value = getSavedAuthorName();
+// Set up author input: hide if logged in, show with saved name if not
+initAuthorInput(presAuthorInput);
 
 let presSlides = [];
 let presIndex = 0;
@@ -6547,8 +6596,8 @@ async function submitPresComment() {
   if (!body) return;
   const photoId = presCommentsPanel.dataset.photoId;
   if (!photoId) return;
-  const author = presAuthorInput.value.trim();
-  setSavedAuthorName(author);
+  const author = getEffectiveAuthor(presAuthorInput);
+  if (!currentUser) setSavedAuthorName(author);
   try {
     await postComment(photoId, author, body);
     presCommentInput.value = '';
