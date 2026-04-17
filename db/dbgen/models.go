@@ -51,6 +51,14 @@ type Route struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Session struct {
+	Token     string `json:"token"`
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	CreatedAt string `json:"created_at"`
+	ExpiresAt string `json:"expires_at"`
+}
+
 type Stop struct {
 	ID           string     `json:"id"`
 	TripID       string     `json:"trip_id"`

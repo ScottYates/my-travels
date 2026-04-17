@@ -30,11 +30,12 @@ import (
 )
 
 type Server struct {
-	DB           *sql.DB
-	Hostname     string
-	UploadDir    string
-	StaticDir    string
-	TemplatesDir string
+	DB             *sql.DB
+	Hostname       string
+	UploadDir      string
+	StaticDir      string
+	TemplatesDir   string
+	GoogleClientID string
 }
 
 // JSON response helpers
@@ -61,7 +62,7 @@ func jsonCreated(w http.ResponseWriter, data any) {
 }
 
 // New creates a new Server, initializes the database, and ensures the upload directory exists.
-func New(dbPath, hostname string) (*Server, error) {
+func New(dbPath, hostname, googleClientID string) (*Server, error) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
 
@@ -71,10 +72,11 @@ func New(dbPath, hostname string) (*Server, error) {
 	}
 
 	srv := &Server{
-		Hostname:     hostname,
-		UploadDir:    uploadDir,
-		TemplatesDir: filepath.Join(baseDir, "templates"),
-		StaticDir:    filepath.Join(baseDir, "static"),
+		Hostname:       hostname,
+		UploadDir:      uploadDir,
+		TemplatesDir:   filepath.Join(baseDir, "templates"),
+		StaticDir:      filepath.Join(baseDir, "static"),
+		GoogleClientID: googleClientID,
 	}
 	if err := srv.setUpDatabase(dbPath); err != nil {
 		return nil, err
@@ -103,17 +105,23 @@ type authUser struct {
 	Email  string `json:"email"`
 }
 
-func getUser(r *http.Request) *authUser {
-	uid := r.Header.Get("X-ExeDev-UserID")
-	email := r.Header.Get("X-ExeDev-Email")
-	if uid == "" {
+const sessionCookieName = "session"
+
+func (s *Server) getUser(r *http.Request) *authUser {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
 		return nil
 	}
-	return &authUser{UserID: uid, Email: email}
+	q := dbgen.New(s.DB)
+	sess, err := q.GetSession(r.Context(), c.Value)
+	if err != nil {
+		return nil
+	}
+	return &authUser{UserID: sess.UserID, Email: sess.Email}
 }
 
-func requireUser(w http.ResponseWriter, r *http.Request) *authUser {
-	u := getUser(r)
+func (s *Server) requireUser(w http.ResponseWriter, r *http.Request) *authUser {
+	u := s.getUser(r)
 	if u == nil {
 		jsonError(w, "authentication required", http.StatusUnauthorized)
 		return nil
@@ -123,7 +131,7 @@ func requireUser(w http.ResponseWriter, r *http.Request) *authUser {
 
 // requireTripOwner loads a trip by ID and verifies the current user owns it.
 func (s *Server) requireTripOwner(w http.ResponseWriter, r *http.Request, tripID string) (dbgen.Trip, *authUser, bool) {
-	u := requireUser(w, r)
+	u := s.requireUser(w, r)
 	if u == nil {
 		return dbgen.Trip{}, nil, false
 	}
@@ -146,7 +154,7 @@ func (s *Server) requireTripOwner(w http.ResponseWriter, r *http.Request, tripID
 
 // requireStopOwner loads a stop and verifies the current user owns its parent trip.
 func (s *Server) requireStopOwner(w http.ResponseWriter, r *http.Request, stopID string) (dbgen.Stop, *authUser, bool) {
-	u := requireUser(w, r)
+	u := s.requireUser(w, r)
 	if u == nil {
 		return dbgen.Stop{}, nil, false
 	}
@@ -170,7 +178,7 @@ func (s *Server) requireStopOwner(w http.ResponseWriter, r *http.Request, stopID
 
 // requirePhotoOwner loads a photo and verifies the current user owns its parent trip.
 func (s *Server) requirePhotoOwner(w http.ResponseWriter, r *http.Request, photoID string) (dbgen.Photo, *authUser, bool) {
-	u := requireUser(w, r)
+	u := s.requireUser(w, r)
 	if u == nil {
 		return dbgen.Photo{}, nil, false
 	}
@@ -203,6 +211,8 @@ func (s *Server) Serve(addr string) error {
 
 	// Auth
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("POST /auth/google/callback", s.handleGoogleCallback)
+	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
@@ -275,7 +285,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	// Build auth JSON for injection into the SPA
 	authInfo := map[string]any{"authenticated": false}
-	u := getUser(r)
+	u := s.getUser(r)
 	if u != nil {
 		authInfo = map[string]any{
 			"authenticated": true,
@@ -286,8 +296,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	authJSON, _ := json.Marshal(authInfo)
 
 	data := map[string]any{
-		"Hostname": s.Hostname,
-		"AuthJSON": template.JS(authJSON),
+		"Hostname":       s.Hostname,
+		"AuthJSON":       template.JS(authJSON),
+		"GoogleClientID": s.GoogleClientID,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -297,7 +308,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	u := getUser(r)
+	u := s.getUser(r)
 	if u == nil {
 		jsonOK(w, map[string]any{"authenticated": false})
 		return
@@ -307,6 +318,82 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"user_id":       u.UserID,
 		"email":         u.Email,
 	})
+}
+
+// handleGoogleCallback receives a Google ID token from the frontend GSI flow,
+// verifies it, creates a session, and sets a cookie.
+func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Credential string `json:"credential"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Credential == "" {
+		jsonError(w, "missing credential", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the Google ID token
+	claims, err := verifyGoogleIDToken(r.Context(), body.Credential, s.GoogleClientID)
+	if err != nil {
+		slog.Warn("google token verification failed", "error", err)
+		jsonError(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// Create session
+	token := uuid.New().String()
+	now := time.Now()
+	expires := now.Add(30 * 24 * time.Hour) // 30 days
+
+	q := dbgen.New(s.DB)
+	// Clean up expired sessions periodically
+	_ = q.DeleteExpiredSessions(r.Context())
+
+	if err := q.CreateSession(r.Context(), dbgen.CreateSessionParams{
+		Token:     token,
+		UserID:    claims.Sub,
+		Email:     claims.Email,
+		CreatedAt: now.UTC().Format(time.RFC3339),
+		ExpiresAt: expires.UTC().Format(time.RFC3339),
+	}); err != nil {
+		slog.Error("create session", "error", err)
+		jsonError(w, "failed to create session", http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		Expires:  expires,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+	})
+
+	jsonOK(w, map[string]any{
+		"authenticated": true,
+		"user_id":       claims.Sub,
+		"email":         claims.Email,
+	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	c, err := r.Cookie(sessionCookieName)
+	if err == nil && c.Value != "" {
+		q := dbgen.New(s.DB)
+		_ = q.DeleteSession(r.Context(), c.Value)
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	jsonOK(w, map[string]any{"ok": true})
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +443,7 @@ func (s *Server) buildTripDetail(r *http.Request, trip dbgen.Trip) (*tripDetail,
 // ---------------------------------------------------------------------------
 
 func (s *Server) handleListTrips(w http.ResponseWriter, r *http.Request) {
-	u := getUser(r)
+	u := s.getUser(r)
 	q := dbgen.New(s.DB)
 	var trips []dbgen.Trip
 	var err error
@@ -377,7 +464,7 @@ func (s *Server) handleListTrips(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateTrip(w http.ResponseWriter, r *http.Request) {
-	u := requireUser(w, r)
+	u := s.requireUser(w, r)
 	if u == nil {
 		return
 	}
@@ -1670,7 +1757,7 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request, tripID, p
 }
 
 func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
-	u := requireUser(w, r)
+	u := s.requireUser(w, r)
 	if u == nil {
 		return
 	}
@@ -1878,7 +1965,7 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
-	u := requireUser(w, r)
+	u := s.requireUser(w, r)
 	if u == nil {
 		return
 	}
