@@ -23,7 +23,8 @@ func run() error {
 		hostname = "unknown"
 	}
 	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
-	server, err := srv.New("db.sqlite3", hostname, googleClientID)
+	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	server, err := srv.New("db.sqlite3", hostname, googleClientID, googleClientSecret)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}

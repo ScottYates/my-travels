@@ -30,12 +30,13 @@ import (
 )
 
 type Server struct {
-	DB             *sql.DB
-	Hostname       string
-	UploadDir      string
-	StaticDir      string
-	TemplatesDir   string
-	GoogleClientID string
+	DB                 *sql.DB
+	Hostname           string
+	UploadDir          string
+	StaticDir          string
+	TemplatesDir       string
+	GoogleClientID     string
+	GoogleClientSecret string
 }
 
 // JSON response helpers
@@ -62,7 +63,7 @@ func jsonCreated(w http.ResponseWriter, data any) {
 }
 
 // New creates a new Server, initializes the database, and ensures the upload directory exists.
-func New(dbPath, hostname, googleClientID string) (*Server, error) {
+func New(dbPath, hostname, googleClientID, googleClientSecret string) (*Server, error) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	baseDir := filepath.Dir(thisFile)
 
@@ -72,11 +73,12 @@ func New(dbPath, hostname, googleClientID string) (*Server, error) {
 	}
 
 	srv := &Server{
-		Hostname:       hostname,
-		UploadDir:      uploadDir,
-		TemplatesDir:   filepath.Join(baseDir, "templates"),
-		StaticDir:      filepath.Join(baseDir, "static"),
-		GoogleClientID: googleClientID,
+		Hostname:           hostname,
+		UploadDir:          uploadDir,
+		TemplatesDir:       filepath.Join(baseDir, "templates"),
+		StaticDir:          filepath.Join(baseDir, "static"),
+		GoogleClientID:     googleClientID,
+		GoogleClientSecret: googleClientSecret,
 	}
 	if err := srv.setUpDatabase(dbPath); err != nil {
 		return nil, err
@@ -211,7 +213,8 @@ func (s *Server) Serve(addr string) error {
 
 	// Auth
 	mux.HandleFunc("GET /api/me", s.handleMe)
-	mux.HandleFunc("POST /auth/google/callback", s.handleGoogleCallback)
+	mux.HandleFunc("GET /auth/google/login", s.handleGoogleLogin)
+	mux.HandleFunc("GET /auth/google/callback", s.handleGoogleCallback)
 	mux.HandleFunc("POST /auth/logout", s.handleLogout)
 
 	// Static files
@@ -320,32 +323,110 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGoogleCallback receives a Google ID token from the frontend GSI flow,
-// verifies it, creates a session, and sets a cookie.
-func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Credential string `json:"credential"`
+// getPublicOrigin returns the public-facing origin (scheme + host) from proxy headers.
+func getPublicOrigin(r *http.Request) string {
+	proto := r.Header.Get("X-Forwarded-Proto")
+	if proto == "" {
+		if r.TLS != nil {
+			proto = "https"
+		} else {
+			proto = "http"
+		}
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Credential == "" {
-		jsonError(w, "missing credential", http.StatusBadRequest)
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	return proto + "://" + host
+}
+
+// handleGoogleLogin redirects the user to Google's OAuth 2.0 authorization endpoint.
+func (s *Server) handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
+	if s.GoogleClientID == "" {
+		http.Error(w, "Google OAuth not configured", http.StatusInternalServerError)
+		return
+	}
+	origin := getPublicOrigin(r)
+	redirectURI := origin + "/auth/google/callback"
+
+	// Generate a random state to prevent CSRF
+	state := uuid.New().String()
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oauth_state",
+		Value:    state,
+		Path:     "/",
+		MaxAge:   600,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   proto(r) == "https",
+	})
+
+	url := "https://accounts.google.com/o/oauth2/v2/auth" +
+		"?client_id=" + s.GoogleClientID +
+		"&redirect_uri=" + redirectURI +
+		"&response_type=code" +
+		"&scope=openid+email+profile" +
+		"&state=" + state +
+		"&access_type=online" +
+		"&prompt=select_account"
+
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+func proto(r *http.Request) string {
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		return p
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+// handleGoogleCallback handles the OAuth 2.0 redirect from Google.
+func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
+	// Verify state
+	stateCookie, err := r.Cookie("oauth_state")
+	if err != nil || stateCookie.Value == "" || stateCookie.Value != r.URL.Query().Get("state") {
+		http.Error(w, "invalid state parameter", http.StatusBadRequest)
+		return
+	}
+	// Clear state cookie
+	http.SetCookie(w, &http.Cookie{
+		Name: "oauth_state", Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+	})
+
+	code := r.URL.Query().Get("code")
+	if code == "" {
+		http.Error(w, "missing authorization code", http.StatusBadRequest)
 		return
 	}
 
-	// Verify the Google ID token
-	claims, err := verifyGoogleIDToken(r.Context(), body.Credential, s.GoogleClientID)
+	origin := getPublicOrigin(r)
+	redirectURI := origin + "/auth/google/callback"
+
+	// Exchange authorization code for tokens
+	tokenResp, err := exchangeGoogleCode(r.Context(), code, s.GoogleClientID, s.GoogleClientSecret, redirectURI)
 	if err != nil {
-		slog.Warn("google token verification failed", "error", err)
-		jsonError(w, "invalid token", http.StatusUnauthorized)
+		slog.Error("google token exchange", "error", err)
+		http.Error(w, "authentication failed", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify the ID token
+	claims, err := verifyGoogleIDToken(r.Context(), tokenResp.IDToken, s.GoogleClientID)
+	if err != nil {
+		slog.Error("google token verification", "error", err)
+		http.Error(w, "authentication failed", http.StatusInternalServerError)
 		return
 	}
 
 	// Create session
 	token := uuid.New().String()
 	now := time.Now()
-	expires := now.Add(30 * 24 * time.Hour) // 30 days
+	expires := now.Add(30 * 24 * time.Hour)
 
 	q := dbgen.New(s.DB)
-	// Clean up expired sessions periodically
 	_ = q.DeleteExpiredSessions(r.Context())
 
 	if err := q.CreateSession(r.Context(), dbgen.CreateSessionParams{
@@ -356,7 +437,7 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: expires.UTC().Format(time.RFC3339),
 	}); err != nil {
 		slog.Error("create session", "error", err)
-		jsonError(w, "failed to create session", http.StatusInternalServerError)
+		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
 	}
 
@@ -367,14 +448,11 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		Expires:  expires,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		Secure:   proto(r) == "https",
 	})
 
-	jsonOK(w, map[string]any{
-		"authenticated": true,
-		"user_id":       claims.Sub,
-		"email":         claims.Email,
-	})
+	// Redirect back to the app
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

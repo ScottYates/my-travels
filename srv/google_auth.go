@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -22,8 +23,51 @@ type googleClaims struct {
 	Email string `json:"email"`
 }
 
-// Google's public key endpoint
-const googleCertsURL = "https://www.googleapis.com/oauth2/v3/certs"
+// Google endpoints
+const (
+	googleCertsURL = "https://www.googleapis.com/oauth2/v3/certs"
+	googleTokenURL = "https://oauth2.googleapis.com/token"
+)
+
+// googleTokenResponse is the response from Google's token endpoint.
+type googleTokenResponse struct {
+	IDToken string `json:"id_token"`
+}
+
+// exchangeGoogleCode exchanges an authorization code for tokens.
+func exchangeGoogleCode(ctx context.Context, code, clientID, clientSecret, redirectURI string) (*googleTokenResponse, error) {
+	data := "code=" + code +
+		"&client_id=" + clientID +
+		"&client_secret=" + clientSecret +
+		"&redirect_uri=" + redirectURI +
+		"&grant_type=authorization_code"
+
+	req, err := http.NewRequestWithContext(ctx, "POST", googleTokenURL, strings.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token exchange failed (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var tokenResp googleTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return nil, fmt.Errorf("decode token response: %w", err)
+	}
+	if tokenResp.IDToken == "" {
+		return nil, fmt.Errorf("no id_token in response")
+	}
+	return &tokenResp, nil
+}
 
 type jwk struct {
 	Kid string `json:"kid"`
