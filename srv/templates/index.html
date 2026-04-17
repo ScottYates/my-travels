@@ -427,6 +427,15 @@ textarea.form-input {
 .route-info { flex: 1; }
 .route-info h4 { font-size: 14px; font-weight: 600; }
 
+/* Photo stop separators */
+.photo-stop-sep {
+  display: flex; align-items: center; gap: 8px;
+  margin: 12px 0 6px; font-size: 12px; color: var(--orange);
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.photo-stop-sep::before, .photo-stop-sep::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
 /* Photo grid */
 .photo-grid {
   display: grid;
@@ -982,6 +991,17 @@ textarea.form-input {
 
 .photo-modal-overlay.active { display: flex; }
 
+.photo-nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  background: rgba(0,0,0,0.5); color: #fff; border: none;
+  font-size: 48px; line-height: 1; padding: 8px 14px;
+  cursor: pointer; border-radius: var(--radius); z-index: 310;
+  transition: background 0.15s;
+}
+.photo-nav:hover { background: rgba(255,255,255,0.2); }
+.photo-nav-prev { left: 16px; }
+.photo-nav-next { right: 16px; }
+
 .photo-modal-overlay img {
   max-width: 90vw;
   max-height: 70vh;
@@ -1286,6 +1306,8 @@ body.readonly .edit-only { display: none !important; }
 
 <!-- Photo lightbox modal -->
 <div class="photo-modal-overlay" id="photoModal">
+  <button class="photo-nav photo-nav-prev" id="photoNavPrev">‹</button>
+  <button class="photo-nav photo-nav-next" id="photoNavNext">›</button>
   <img id="photoModalImg" src="" alt="">
   <div class="photo-modal-info">
     <input type="text" id="photoModalCaption" placeholder="Add a caption...">
@@ -3009,9 +3031,11 @@ function onCesiumClick(screenPos) {
 
   if (entity) {
     if (entity._stopData) {
-      showGlobePopup(entity._stopData.lng, entity._stopData.lat,
-        '<strong>' + escapeHtml(entity._stopData.title) + '</strong>' +
-        (entity._stopData.description ? '<br><span style="font-size:12px;color:#94a3b8">' + escapeHtml(entity._stopData.description) + '</span>' : ''));
+      // Fly to stop location (no popup)
+      const s = entity._stopData;
+      const dest = Cesium.Cartesian3.fromDegrees(s.lng, s.lat, 8000);
+      const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
+      viewer.camera.flyTo({ destination: dest, orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 }, duration: d, easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT });
     } else if (entity._photoData) {
       const p = entity._photoData;
       closeGlobePopup();
@@ -3388,18 +3412,49 @@ function renderTripDetail() {
   html += '<div class="upload-queue edit-only" id="uploadQueue"></div>';
 
   if (photos.length > 0) {
-    html += '<div class="photo-grid">';
-    photos.forEach(photo => {
-      const hasLocation = photo.lat != null && photo.lng != null;
-      html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '">';
-      html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
-      html += '<div class="photo-overlay"><span>' + escapeHtml(photo.caption || photo.original_name) + '</span></div>';
-      if (!hasLocation) {
-        html += '<span class="photo-no-location">No 📍</span>';
+    // Sort photos by taken_at ascending, then created_at as fallback
+    const sortedPhotos = photos.slice().sort((a, b) => {
+      const ta = a.taken_at || a.created_at || '';
+      const tb = b.taken_at || b.created_at || '';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
+
+    // Group by stop, preserving time order
+    const stopOrder = stops.slice().sort((a, b) => a.stop_order - b.stop_order);
+    const groups = []; // {stop, photos}
+    if (stopOrder.length > 0) {
+      const stopMap = {};
+      stopOrder.forEach(s => { stopMap[s.id] = s; });
+      const used = new Set();
+      stopOrder.forEach(stop => {
+        const sp = sortedPhotos.filter(p => p.stop_id === stop.id);
+        if (sp.length > 0) { groups.push({stop, photos: sp}); sp.forEach(p => used.add(p.id)); }
+      });
+      const unassigned = sortedPhotos.filter(p => !used.has(p.id));
+      if (unassigned.length > 0) groups.push({stop: null, photos: unassigned});
+    } else {
+      groups.push({stop: null, photos: sortedPhotos});
+    }
+
+    groups.forEach(g => {
+      if (g.stop) {
+        html += '<div class="photo-stop-sep"><span>' + escapeHtml(g.stop.title || 'Untitled Stop') + '</span></div>';
+      } else if (groups.length > 1) {
+        html += '<div class="photo-stop-sep"><span>Unassigned</span></div>';
       }
+      html += '<div class="photo-grid">';
+      g.photos.forEach(photo => {
+        const hasLocation = photo.lat != null && photo.lng != null;
+        html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '">';
+        html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
+        html += '<div class="photo-overlay"><span>' + escapeHtml(photo.caption || photo.original_name) + '</span></div>';
+        if (!hasLocation) {
+          html += '<span class="photo-no-location">No 📍</span>';
+        }
+        html += '</div>';
+      });
       html += '</div>';
     });
-    html += '</div>';
   }
 
   // Hidden GPX file input
@@ -4008,6 +4063,17 @@ function uploadPhotos(files) {
 // ---------------------------------------------------------------
 // Photo modal
 // ---------------------------------------------------------------
+// Sorted photo list for navigation
+function getSortedPhotos() {
+  const trip = state.currentTrip;
+  if (!trip) return [];
+  return (trip.photos || []).slice().sort((a, b) => {
+    const ta = a.taken_at || a.created_at || '';
+    const tb = b.taken_at || b.created_at || '';
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
+  });
+}
+
 function openPhotoModal(photoId) {
   const trip = state.currentTrip;
   if (!trip) return;
@@ -4015,13 +4081,44 @@ function openPhotoModal(photoId) {
   if (!photo) return;
 
   state.selectedPhotoId = photoId;
-  $('#photoModalImg').src = '/uploads/' + photo.filename;
-  $('#photoModalCaption').value = photo.caption || '';
-  // Show rescan button only for photos without location
-  const hasLoc = photo.lat != null && photo.lng != null;
-  $('#photoModalRescan').style.display = hasLoc ? 'none' : '';
+  showPhotoInModal(photo);
   $('#photoModal').classList.add('active');
 }
+
+function showPhotoInModal(photo) {
+  $('#photoModalImg').src = '/uploads/' + photo.filename;
+  $('#photoModalCaption').value = photo.caption || '';
+  const hasLoc = photo.lat != null && photo.lng != null;
+  $('#photoModalRescan').style.display = hasLoc ? 'none' : '';
+  // Update nav button visibility
+  const sorted = getSortedPhotos();
+  const idx = sorted.findIndex(p => p.id === photo.id);
+  $('#photoNavPrev').style.display = idx > 0 ? '' : 'none';
+  $('#photoNavNext').style.display = idx < sorted.length - 1 ? '' : 'none';
+}
+
+function navigatePhoto(dir) {
+  const sorted = getSortedPhotos();
+  const idx = sorted.findIndex(p => p.id === state.selectedPhotoId);
+  const next = sorted[idx + dir];
+  if (!next) return;
+  state.selectedPhotoId = next.id;
+  showPhotoInModal(next);
+  // Also fly to the photo on the globe and highlight
+  if (next.lat != null && next.lng != null) {
+    flyToPhoto(next);
+    highlightPhotoMarker(next.id);
+  }
+  // Highlight sidebar thumbnail
+  state.focusedPhotoId = next.id;
+  $$('.photo-thumb').forEach(t => t.classList.remove('focused'));
+  const thumb = document.querySelector('.photo-thumb[data-photo-id="' + next.id + '"]');
+  if (thumb) { thumb.classList.add('focused'); thumb.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }
+}
+
+// Nav button handlers
+$('#photoNavPrev').addEventListener('click', (e) => { e.stopPropagation(); navigatePhoto(-1); });
+$('#photoNavNext').addEventListener('click', (e) => { e.stopPropagation(); navigatePhoto(1); });
 
 // Click modal image → show full resolution
 $('#photoModalImg').addEventListener('click', (e) => {
@@ -4047,6 +4144,11 @@ document.addEventListener('keydown', (e) => {
       $('#fullresOverlay').classList.remove('active');
       $('#fullresImg').src = '';
     }
+  }
+  // Arrow keys navigate photos when modal is open
+  if ($('#photoModal').classList.contains('active') && !$('#fullresOverlay').classList.contains('active')) {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); navigatePhoto(1); }
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); navigatePhoto(-1); }
   }
 });
 
@@ -4820,7 +4922,11 @@ function renderTimeline() {
       const dy = (p.lat - stop.lat) * 111320;
       return Math.sqrt(dx * dx + dy * dy) < 500;
     });
-    const allPhotos = stopPhotos.concat(nearbyPhotos);
+    const allPhotos = stopPhotos.concat(nearbyPhotos).sort((a, b) => {
+      const ta = a.taken_at || a.created_at || '';
+      const tb = b.taken_at || b.created_at || '';
+      return ta < tb ? -1 : ta > tb ? 1 : 0;
+    });
 
     html += '<div class="timeline-card" data-lat="' + stop.lat + '" data-lng="' + stop.lng + '">';
     if (stop.arrived_at) {
