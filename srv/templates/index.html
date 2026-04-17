@@ -3172,8 +3172,20 @@ $$('.tab-btn').forEach(btn => {
 $('#backBtn').addEventListener('click', () => {
   if (state.readOnly) return;
   state.currentTrip = null;
+  clearMapData();
   showView('list');
   loadTrips();
+  // Fly camera back to default home view
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(-98, 38, 12000000),
+    orientation: {
+      heading: 0,
+      pitch: Cesium.Math.toRadians(-90),
+      roll: 0,
+    },
+    duration: 1.5,
+    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+  });
 });
 
 // Mobile toggle
@@ -4453,16 +4465,28 @@ $('#cancelDraw').addEventListener('click', () => {
 // ---------------------------------------------------------------
 // Map data rendering (Cesium entities)
 // ---------------------------------------------------------------
+var _photoLoadGeneration = 0; // cancellation token for async photo thumbnail loading
+
 function clearMapData() {
-  // Remove all trip-related entities (but not draw preview)
-  viewer.entities.values
-    .filter(e => e._isTripData)
-    .forEach(e => viewer.entities.remove(e));
+  // Cancel any in-progress photo thumbnail loading
+  _photoLoadGeneration++;
+  // Collect references before removal to ensure proper cleanup
+  const toRemove = viewer.entities.values.filter(e => e._isTripData);
+  // Hide all trip entities immediately to prevent ghost rendering
+  for (let i = 0; i < toRemove.length; i++) {
+    toRemove[i].show = false;
+  }
+  // Now remove them
+  for (let i = 0; i < toRemove.length; i++) {
+    viewer.entities.remove(toRemove[i]);
+  }
   state.mapMarkers = [];
   state.photoMarkers = [];
   state.focusedPhotoId = null;
   closeGlobePopup();
   $('#camToolbar').classList.remove('active');
+  // Force scene to re-render to clear visual artifacts
+  viewer.scene.requestRender();
 }
 
 function renderMapData() {
@@ -4562,16 +4586,20 @@ function renderMapData() {
 
   // Batch-load thumbnails after the fly animation has started
   const BATCH = 4;
+  const gen = ++_photoLoadGeneration; // capture generation for cancellation
   async function loadPhotoBatch(startIdx) {
+    if (_photoLoadGeneration !== gen) return; // cancelled
     const batch = photoEntities.slice(startIdx, startIdx + BATCH);
     if (batch.length === 0) return;
     await Promise.all(batch.map(({ entity, photo }) => new Promise(resolve => {
+      if (_photoLoadGeneration !== gen) { resolve(); return; }
       const canvas = document.createElement('canvas');
       canvas.width = 64; canvas.height = 64;
       const ctx = canvas.getContext('2d');
       const img = new Image();
       img.crossOrigin = 'anonymous';
       img.onload = function() {
+        if (_photoLoadGeneration !== gen) { resolve(); return; }
         ctx.save();
         ctx.beginPath(); ctx.arc(32, 32, 28, 0, Math.PI * 2); ctx.clip();
         const s = Math.min(img.width, img.height);
@@ -4596,6 +4624,7 @@ function renderMapData() {
       img.onerror = resolve;
       img.src = '/thumb/' + photo.filename;
     })));
+    if (_photoLoadGeneration !== gen) return; // cancelled
     // Small delay between batches to let the renderer breathe
     await new Promise(r => setTimeout(r, 80));
     await loadPhotoBatch(startIdx + BATCH);
@@ -4636,13 +4665,20 @@ function fitMapToTrip() {
   minLng -= lngSpan * pad;
   maxLng += lngSpan * pad;
 
-  const rect = Cesium.Rectangle.fromDegrees(minLng, minLat, maxLng, maxLat);
-
-  // Compute a reasonable altitude based on extent of data
+  // Compute extent in km (accounting for latitude)
   const extentKm = Math.max(
     latSpan * 111,
     lngSpan * 111 * Math.cos(Cesium.Math.toRadians((minLat + maxLat) / 2))
   );
+
+  // For very wide-spanning trips (>120° longitude or >5000km), use Cesium's
+  // built-in zoomTo which handles globe wrapping and framing properly
+  if (lngSpan > 120 || extentKm > 5000) {
+    const tripEnts = viewer.entities.values.filter(e => e._isTripData);
+    viewer.zoomTo(tripEnts, new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-90), 0));
+    return;
+  }
+
   // Altitude: 2x extent in meters, minimum 15km (so you see context), max 8M
   const altitude = Math.min(8000000, Math.max(15000, extentKm * 2000));
 
@@ -4650,7 +4686,7 @@ function fitMapToTrip() {
   const centerLng = (minLng + maxLng) / 2;
 
   // Use steeper (more top-down) pitch for tight clusters, shallower for wide areas
-  const pitch = extentKm < 5 ? -75 : -55;
+  const pitch = extentKm < 5 ? -75 : extentKm < 500 ? -55 : -65;
 
   viewer.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, altitude),
