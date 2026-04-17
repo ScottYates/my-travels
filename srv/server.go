@@ -261,6 +261,7 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/share/{shareID}/photos/{photoID}/comments", s.handleCreateCommentByShare)
 	mux.HandleFunc("POST /api/present/{slug}/photos/{photoID}/comments", s.handleCreateCommentByPresent)
 	mux.HandleFunc("POST /api/photos/{photoID}/comments", s.handleCreateComment)
+	mux.HandleFunc("PUT /api/comments/{id}", s.handleUpdateComment)
 	mux.HandleFunc("DELETE /api/comments/{id}", s.handleDeleteComment)
 
 	// Photo rescan EXIF
@@ -1835,6 +1836,64 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request, tripID, p
 	jsonCreated(w, comment)
 }
 
+func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
+	u := s.requireUser(w, r)
+	if u == nil {
+		return
+	}
+	id := r.PathValue("id")
+	q := dbgen.New(s.DB)
+
+	// Verify the comment exists and the user owns the trip
+	comment, err := q.GetComment(r.Context(), id)
+	if err != nil {
+		jsonError(w, "comment not found", http.StatusNotFound)
+		return
+	}
+	trip, err := q.GetTrip(r.Context(), comment.TripID)
+	if err != nil || trip.UserID == nil || *trip.UserID != u.UserID {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	var body struct {
+		Author string `json:"author"`
+		Body   string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	body.Author = strings.TrimSpace(body.Author)
+	body.Body = strings.TrimSpace(body.Body)
+	if body.Body == "" {
+		jsonError(w, "body is required", http.StatusBadRequest)
+		return
+	}
+	if body.Author == "" {
+		body.Author = "Anonymous"
+	}
+	if len(body.Author) > 50 {
+		body.Author = body.Author[:50]
+	}
+	if len(body.Body) > 500 {
+		body.Body = body.Body[:500]
+	}
+
+	if err := q.UpdateComment(r.Context(), dbgen.UpdateCommentParams{
+		Author: body.Author,
+		Body:   body.Body,
+		ID:     id,
+	}); err != nil {
+		jsonError(w, "failed to update comment", http.StatusInternalServerError)
+		return
+	}
+
+	comment.Author = body.Author
+	comment.Body = body.Body
+	jsonOK(w, comment)
+}
+
 func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	u := s.requireUser(w, r)
 	if u == nil {
@@ -1842,6 +1901,18 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	q := dbgen.New(s.DB)
+
+	// Verify the comment exists and the user owns the trip
+	comment, err := q.GetComment(r.Context(), id)
+	if err != nil {
+		jsonError(w, "comment not found", http.StatusNotFound)
+		return
+	}
+	trip, err := q.GetTrip(r.Context(), comment.TripID)
+	if err != nil || trip.UserID == nil || *trip.UserID != u.UserID {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
 
 	if err := q.DeleteComment(r.Context(), id); err != nil {
 		jsonError(w, "failed to delete comment", http.StatusInternalServerError)

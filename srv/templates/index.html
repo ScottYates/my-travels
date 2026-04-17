@@ -1081,7 +1081,7 @@ textarea.form-input {
 
 .photo-modal-overlay img {
   max-width: 90vw;
-  max-height: 70vh;
+  max-height: 55vh;
   object-fit: contain;
   border-radius: var(--radius);
   cursor: zoom-in;
@@ -1142,6 +1142,103 @@ textarea.form-input {
 }
 
 .photo-modal-info input:focus { outline: none; border-color: var(--accent); }
+
+/* Photo modal comments */
+.photo-modal-comments {
+  background: var(--navy);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  width: min(600px, 90vw);
+  max-height: 25vh;
+  display: flex;
+  flex-direction: column;
+}
+.photo-modal-comments-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.pm-comment {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--navy-light);
+}
+.pm-comment-content { flex: 1; min-width: 0; }
+.pm-comment-author {
+  font-weight: 700;
+  font-size: 11px;
+  color: #f59e0b;
+}
+.pm-comment-body {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.3;
+}
+.pm-comment-time {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+.pm-comment-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.pm-comment:hover .pm-comment-actions { opacity: 1; }
+.pm-comment-actions button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+.pm-comment-actions button:hover { background: var(--navy-lighter); color: var(--text); }
+.pm-comment-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.pm-comment-form input {
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 12px;
+  outline: none;
+}
+.pm-comment-form input:focus { border-color: var(--accent); }
+.pm-comment-form .pm-author-input { width: 100px; }
+.pm-comment-form .pm-body-input { flex: 1; }
+.pm-comment-form button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pm-comment-form button:hover { opacity: 0.9; }
+.pm-no-comments {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 8px;
+}
 
 /* Read-only badge */
 .readonly-badge {
@@ -1660,6 +1757,25 @@ body.no-auth .readonly-badge { display: none !important; }
   font-weight: 600;
   margin-top: 2px;
 }
+.pres-comment-actions {
+  display: flex;
+  gap: 2px;
+  float: right;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.pres-comment:hover .pres-comment-actions { opacity: 1; }
+.pres-comment-actions button {
+  background: rgba(255,255,255,0.15);
+  border: none;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  pointer-events: auto;
+}
+.pres-comment-actions button:hover { background: rgba(255,255,255,0.3); color: #fff; }
 .pres-comment-form {
   display: flex;
   gap: 4px;
@@ -1726,6 +1842,14 @@ body.no-auth .readonly-badge { display: none !important; }
     <button class="btn btn-secondary btn-sm edit-only" id="photoModalRescan">🔍 Rescan EXIF</button>
     <button class="btn btn-danger btn-sm edit-only" id="photoModalDelete">Delete</button>
     <button class="btn btn-ghost btn-sm" id="photoModalClose">✕ Close</button>
+  </div>
+  <div class="photo-modal-comments" id="photoModalComments">
+    <div class="photo-modal-comments-list" id="photoModalCommentsList"></div>
+    <div class="pm-comment-form">
+      <input type="text" class="pm-author-input" id="pmAuthorInput" placeholder="Your name" maxlength="50">
+      <input type="text" class="pm-body-input" id="pmBodyInput" placeholder="Add a comment…" maxlength="500">
+      <button id="pmSendBtn">Send</button>
+    </div>
   </div>
 </div>
 
@@ -1895,6 +2019,7 @@ body.no-auth .readonly-badge { display: none !important; }
   <div class="pres-comments" id="presCommentsPanel" style="display:none">
     <div class="pres-comments-list" id="presCommentsList"></div>
     <div class="pres-comment-form" id="presCommentForm">
+      <input type="text" id="presAuthorInput" placeholder="Your name" maxlength="50" style="width:80px;flex:none">
       <input type="text" id="presCommentInput" placeholder="Add a comment…" maxlength="500">
       <button id="presCommentSend">Send</button>
     </div>
@@ -4679,6 +4804,8 @@ function showPhotoInModal(photo) {
   const idx = sorted.findIndex(p => p.id === photo.id);
   $('#photoNavPrev').style.display = idx > 0 ? '' : 'none';
   $('#photoNavNext').style.display = idx < sorted.length - 1 ? '' : 'none';
+  // Render comments for this photo
+  renderPhotoModalComments();
 }
 
 function navigatePhoto(dir) {
@@ -5780,6 +5907,188 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------
+// Comments (shared logic)
+// ---------------------------------------------------------------
+function getSavedAuthorName() {
+  return localStorage.getItem('commentAuthor') || '';
+}
+function setSavedAuthorName(name) {
+  localStorage.setItem('commentAuthor', name);
+}
+
+// Determine if current user is the trip owner (can edit/delete comments)
+function isOwner() {
+  if (!currentUser || !state.currentTrip) return false;
+  return state.currentTrip.user_id === currentUser.userId;
+}
+
+function getCommentsForPhoto(photoId) {
+  const trip = state.currentTrip;
+  if (!trip || !trip.comments) return [];
+  return trip.comments.filter(c => c.photo_id === photoId).sort((a, b) => {
+    return (a.created_at || '') < (b.created_at || '') ? -1 : 1;
+  });
+}
+
+function formatCommentTime(d) {
+  const dt = new Date(d);
+  const now = new Date();
+  const diffMs = now - dt;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return diffMin + 'm ago';
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return diffH + 'h ago';
+  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+async function postComment(photoId, author, body) {
+  const trip = state.currentTrip;
+  if (!trip) throw new Error('No trip loaded');
+  let comment;
+  if (state.presentSlug) {
+    comment = await api('POST', '/api/present/' + state.presentSlug + '/photos/' + photoId + '/comments', { body, author });
+  } else if (state.shareID) {
+    comment = await api('POST', '/api/share/' + state.shareID + '/photos/' + photoId + '/comments', { body, author });
+  } else {
+    comment = await api('POST', '/api/photos/' + photoId + '/comments', { body, author });
+  }
+  if (!trip.comments) trip.comments = [];
+  trip.comments.push(comment);
+  return comment;
+}
+
+async function editComment(commentId, author, body) {
+  const updated = await api('PUT', '/api/comments/' + commentId, { author, body });
+  const trip = state.currentTrip;
+  if (trip && trip.comments) {
+    const idx = trip.comments.findIndex(c => c.id === commentId);
+    if (idx >= 0) trip.comments[idx] = updated;
+  }
+  return updated;
+}
+
+async function deleteComment(commentId) {
+  await api('DELETE', '/api/comments/' + commentId);
+  const trip = state.currentTrip;
+  if (trip && trip.comments) {
+    trip.comments = trip.comments.filter(c => c.id !== commentId);
+  }
+}
+
+// ---------------------------------------------------------------
+// Photo Modal Comments
+// ---------------------------------------------------------------
+const pmCommentsList = $('#photoModalCommentsList');
+const pmAuthorInput = $('#pmAuthorInput');
+const pmBodyInput = $('#pmBodyInput');
+
+// Restore saved author name
+pmAuthorInput.value = getSavedAuthorName();
+
+function renderPhotoModalComments() {
+  const photoId = state.selectedPhotoId;
+  if (!photoId) { pmCommentsList.innerHTML = ''; return; }
+  const comments = getCommentsForPhoto(photoId);
+  const owner = isOwner();
+  if (comments.length === 0) {
+    pmCommentsList.innerHTML = '<div class="pm-no-comments">No comments yet</div>';
+  } else {
+    pmCommentsList.innerHTML = comments.map(c => {
+      const when = c.created_at ? formatCommentTime(c.created_at) : '';
+      const actions = owner
+        ? '<div class="pm-comment-actions">'
+          + '<button onclick="startEditCommentModal(\'' + c.id + '\')" title="Edit">✏</button>'
+          + '<button onclick="deleteCommentModal(\'' + c.id + '\')" title="Delete">✕</button>'
+          + '</div>'
+        : '';
+      return '<div class="pm-comment" data-cid="' + c.id + '">'
+        + '<div class="pm-comment-content">'
+        + '<div class="pm-comment-author">' + escapeHtml(c.author) + '</div>'
+        + '<div class="pm-comment-body">' + escapeHtml(c.body) + '</div>'
+        + (when ? '<div class="pm-comment-time">' + when + '</div>' : '')
+        + '</div>'
+        + actions
+        + '</div>';
+    }).join('');
+    pmCommentsList.scrollTop = pmCommentsList.scrollHeight;
+  }
+}
+
+async function submitPhotoModalComment() {
+  const body = pmBodyInput.value.trim();
+  if (!body) return;
+  const photoId = state.selectedPhotoId;
+  if (!photoId) return;
+  const author = pmAuthorInput.value.trim();
+  setSavedAuthorName(author);
+  try {
+    await postComment(photoId, author, body);
+    pmBodyInput.value = '';
+    renderPhotoModalComments();
+    // Also refresh pres comments if overlay is active
+    if (presOverlay && presOverlay.classList.contains('active')) renderPresComments(photoId);
+  } catch (err) {
+    toast('Failed to post comment', 'error');
+  }
+}
+
+window.startEditCommentModal = function(cid) {
+  const trip = state.currentTrip;
+  const c = trip && trip.comments ? trip.comments.find(x => x.id === cid) : null;
+  if (!c) return;
+  const el = pmCommentsList.querySelector('[data-cid="' + cid + '"]');
+  if (!el) return;
+  el.innerHTML = '<div style="display:flex;gap:4px;flex:1;align-items:center">'
+    + '<input type="text" class="pm-author-input" value="' + escapeHtml(c.author).replace(/"/g,'&quot;') + '" maxlength="50" style="background:var(--navy-light);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:4px 8px;font-size:11px;width:80px">'
+    + '<input type="text" class="pm-body-input" value="' + escapeHtml(c.body).replace(/"/g,'&quot;') + '" maxlength="500" style="flex:1;background:var(--navy-light);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:4px 8px;font-size:12px">'
+    + '<button onclick="saveEditCommentModal(\'' + cid + '\')" style="background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);padding:4px 10px;font-size:11px;cursor:pointer">✓</button>'
+    + '<button onclick="renderPhotoModalComments()" style="background:none;color:var(--text-muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:4px 8px;font-size:11px;cursor:pointer">✕</button>'
+    + '</div>';
+  el.querySelector('.pm-body-input').focus();
+};
+
+window.saveEditCommentModal = async function(cid) {
+  const el = pmCommentsList.querySelector('[data-cid="' + cid + '"]');
+  if (!el) return;
+  const authorInput = el.querySelector('.pm-author-input');
+  const bodyInput = el.querySelector('.pm-body-input');
+  const author = authorInput ? authorInput.value.trim() : '';
+  const body = bodyInput ? bodyInput.value.trim() : '';
+  if (!body) { toast('Comment cannot be empty', 'error'); return; }
+  try {
+    await editComment(cid, author, body);
+    renderPhotoModalComments();
+    if (presOverlay && presOverlay.classList.contains('active')) renderPresComments(state.selectedPhotoId);
+    toast('Comment updated');
+  } catch (err) {
+    toast('Failed to update comment', 'error');
+  }
+};
+
+window.deleteCommentModal = async function(cid) {
+  if (!confirm('Delete this comment?')) return;
+  try {
+    await deleteComment(cid);
+    renderPhotoModalComments();
+    if (presOverlay && presOverlay.classList.contains('active')) renderPresComments(state.selectedPhotoId);
+    toast('Comment deleted');
+  } catch (err) {
+    toast('Failed to delete comment', 'error');
+  }
+};
+
+$('#pmSendBtn').addEventListener('click', submitPhotoModalComment);
+$('#pmBodyInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitPhotoModalComment(); }
+  e.stopPropagation();
+});
+$('#pmBodyInput').addEventListener('keyup', (e) => e.stopPropagation());
+$('#pmAuthorInput').addEventListener('keydown', (e) => e.stopPropagation());
+$('#pmAuthorInput').addEventListener('keyup', (e) => e.stopPropagation());
+$('#pmAuthorInput').addEventListener('change', (e) => setSavedAuthorName(e.target.value.trim()));
+
+// ---------------------------------------------------------------
 // Presentation Mode
 // ---------------------------------------------------------------
 const presOverlay = $('#presentationOverlay');
@@ -5796,6 +6105,10 @@ const presMiniLabel = $('#presMiniLabel');
 const presCommentsPanel = $('#presCommentsPanel');
 const presCommentsList = $('#presCommentsList');
 const presCommentInput = $('#presCommentInput');
+const presAuthorInput = $('#presAuthorInput');
+
+// Restore saved author name in presentation comment form
+presAuthorInput.value = getSavedAuthorName();
 
 let presSlides = [];
 let presIndex = 0;
@@ -6153,14 +6466,6 @@ function updatePresMiniGlobe(loc, label) {
 }
 
 // ---- Comments ----
-function getPresComments(photoId) {
-  const trip = state.currentTrip;
-  if (!trip || !trip.comments) return [];
-  return trip.comments.filter(c => c.photo_id === photoId).sort((a, b) => {
-    return (a.created_at || '') < (b.created_at || '') ? -1 : 1;
-  });
-}
-
 function renderPresComments(photoId) {
   if (!photoId) {
     presCommentsPanel.style.display = 'none';
@@ -6169,13 +6474,21 @@ function renderPresComments(photoId) {
   presCommentsPanel.style.display = 'flex';
   presCommentsPanel.dataset.photoId = photoId;
 
-  const comments = getPresComments(photoId);
+  const comments = getCommentsForPhoto(photoId);
+  const owner = isOwner();
   if (comments.length === 0) {
     presCommentsList.innerHTML = '<div style="color:rgba(255,255,255,0.3);font-size:12px;text-align:center;padding:8px">No comments yet</div>';
   } else {
     presCommentsList.innerHTML = comments.map(c => {
-      const when = c.created_at ? formatPresCommentTime(c.created_at) : '';
-      return '<div class="pres-comment">'
+      const when = c.created_at ? formatCommentTime(c.created_at) : '';
+      const actions = owner
+        ? '<div class="pres-comment-actions">'
+          + '<button onclick="startEditCommentPres(\'' + c.id + '\')" title="Edit">✎</button>'
+          + '<button onclick="deleteCommentPres(\'' + c.id + '\')" title="Delete">✕</button>'
+          + '</div>'
+        : '';
+      return '<div class="pres-comment" data-cid="' + c.id + '">'
+        + actions
         + '<div class="pres-comment-author">' + escapeHtml(c.author) + '</div>'
         + '<div class="pres-comment-body">' + escapeHtml(c.body) + '</div>'
         + (when ? '<div class="pres-comment-time">' + when + '</div>' : '')
@@ -6185,39 +6498,59 @@ function renderPresComments(photoId) {
   }
 }
 
-function formatPresCommentTime(d) {
-  const dt = new Date(d);
-  const now = new Date();
-  const diffMs = now - dt;
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'just now';
-  if (diffMin < 60) return diffMin + 'm ago';
-  const diffH = Math.floor(diffMin / 60);
-  if (diffH < 24) return diffH + 'h ago';
-  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
+window.startEditCommentPres = function(cid) {
+  const trip = state.currentTrip;
+  const c = trip && trip.comments ? trip.comments.find(x => x.id === cid) : null;
+  if (!c) return;
+  const el = presCommentsList.querySelector('[data-cid="' + cid + '"]');
+  if (!el) return;
+  el.innerHTML = '<div style="display:flex;gap:4px;flex-wrap:wrap">'
+    + '<input type="text" value="' + escapeHtml(c.author).replace(/"/g,'&quot;') + '" maxlength="50" style="width:70px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);border-radius:6px;padding:4px 6px;color:#fff;font-size:11px" class="pres-edit-author">'
+    + '<input type="text" value="' + escapeHtml(c.body).replace(/"/g,'&quot;') + '" maxlength="500" style="flex:1;min-width:100px;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.25);border-radius:6px;padding:4px 6px;color:#fff;font-size:12px" class="pres-edit-body">'
+    + '<button onclick="saveEditCommentPres(\'' + cid + '\')" style="background:var(--accent,#3b82f6);color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer">✓</button>'
+    + '<button onclick="renderPresComments(presCommentsPanel.dataset.photoId)" style="background:rgba(255,255,255,0.15);color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer">✕</button>'
+    + '</div>';
+  const bodyIn = el.querySelector('.pres-edit-body');
+  if (bodyIn) { bodyIn.focus(); bodyIn.addEventListener('keydown', e => e.stopPropagation()); bodyIn.addEventListener('keyup', e => e.stopPropagation()); }
+  const authorIn = el.querySelector('.pres-edit-author');
+  if (authorIn) { authorIn.addEventListener('keydown', e => e.stopPropagation()); authorIn.addEventListener('keyup', e => e.stopPropagation()); }
+};
+
+window.saveEditCommentPres = async function(cid) {
+  const el = presCommentsList.querySelector('[data-cid="' + cid + '"]');
+  if (!el) return;
+  const author = (el.querySelector('.pres-edit-author')?.value || '').trim();
+  const body = (el.querySelector('.pres-edit-body')?.value || '').trim();
+  if (!body) { toast('Comment cannot be empty', 'error'); return; }
+  try {
+    await editComment(cid, author, body);
+    renderPresComments(presCommentsPanel.dataset.photoId);
+    toast('Comment updated');
+  } catch (err) {
+    toast('Failed to update comment', 'error');
+  }
+};
+
+window.deleteCommentPres = async function(cid) {
+  if (!confirm('Delete this comment?')) return;
+  try {
+    await deleteComment(cid);
+    renderPresComments(presCommentsPanel.dataset.photoId);
+    toast('Comment deleted');
+  } catch (err) {
+    toast('Failed to delete comment', 'error');
+  }
+};
 
 async function submitPresComment() {
   const body = presCommentInput.value.trim();
   if (!body) return;
   const photoId = presCommentsPanel.dataset.photoId;
   if (!photoId) return;
-
-  const trip = state.currentTrip;
-  if (!trip) return;
-
+  const author = presAuthorInput.value.trim();
+  setSavedAuthorName(author);
   try {
-    let comment;
-    if (state.presentSlug) {
-      comment = await api('POST', '/api/present/' + state.presentSlug + '/photos/' + photoId + '/comments', { body: body, author: '' });
-    } else if (state.shareID) {
-      comment = await api('POST', '/api/share/' + state.shareID + '/photos/' + photoId + '/comments', { body: body, author: '' });
-    } else {
-      comment = await api('POST', '/api/photos/' + photoId + '/comments', { body: body, author: '' });
-    }
-    // Add to local state
-    if (!trip.comments) trip.comments = [];
-    trip.comments.push(comment);
+    await postComment(photoId, author, body);
     presCommentInput.value = '';
     renderPresComments(photoId);
   } catch (err) {
@@ -6228,9 +6561,12 @@ async function submitPresComment() {
 $('#presCommentSend').addEventListener('click', submitPresComment);
 presCommentInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); submitPresComment(); }
-  e.stopPropagation(); // Don't let arrow keys etc. bubble to slide nav
+  e.stopPropagation();
 });
 presCommentInput.addEventListener('keyup', (e) => e.stopPropagation());
+presAuthorInput.addEventListener('keydown', (e) => e.stopPropagation());
+presAuthorInput.addEventListener('keyup', (e) => e.stopPropagation());
+presAuthorInput.addEventListener('change', (e) => setSavedAuthorName(e.target.value.trim()));
 
 function showPresGlobe(slide) {
   presContent.innerHTML = '';

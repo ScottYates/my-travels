@@ -278,6 +278,24 @@ func (q *Queries) DeleteTrip(ctx context.Context, id string) error {
 	return err
 }
 
+const getComment = `-- name: GetComment :one
+SELECT id, photo_id, trip_id, author, body, created_at FROM comments WHERE id = ?
+`
+
+func (q *Queries) GetComment(ctx context.Context, id string) (Comment, error) {
+	row := q.db.QueryRowContext(ctx, getComment, id)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.PhotoID,
+		&i.TripID,
+		&i.Author,
+		&i.Body,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getPhoto = `-- name: GetPhoto :one
 SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range FROM photos WHERE id = ?
 `
@@ -800,6 +818,21 @@ type SetPhotoStopIDParams struct {
 
 func (q *Queries) SetPhotoStopID(ctx context.Context, arg SetPhotoStopIDParams) error {
 	_, err := q.db.ExecContext(ctx, setPhotoStopID, arg.StopID, arg.ID)
+	return err
+}
+
+const updateComment = `-- name: UpdateComment :exec
+UPDATE comments SET author = ?, body = ? WHERE id = ?
+`
+
+type UpdateCommentParams struct {
+	Author string `json:"author"`
+	Body   string `json:"body"`
+	ID     string `json:"id"`
+}
+
+func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) error {
+	_, err := q.db.ExecContext(ctx, updateComment, arg.Author, arg.Body, arg.ID)
 	return err
 }
 
