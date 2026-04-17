@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -361,16 +362,16 @@ func (s *Server) handleGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		Secure:   proto(r) == "https",
 	})
 
-	url := "https://accounts.google.com/o/oauth2/v2/auth" +
-		"?client_id=" + s.GoogleClientID +
-		"&redirect_uri=" + redirectURI +
-		"&response_type=code" +
-		"&scope=openid+email+profile" +
-		"&state=" + state +
-		"&access_type=online" +
-		"&prompt=select_account"
+	params := url.Values{}
+	params.Set("client_id", s.GoogleClientID)
+	params.Set("redirect_uri", redirectURI)
+	params.Set("response_type", "code")
+	params.Set("scope", "openid email profile")
+	params.Set("state", state)
+	params.Set("access_type", "online")
+	params.Set("prompt", "select_account")
 
-	http.Redirect(w, r, url, http.StatusFound)
+	http.Redirect(w, r, "https://accounts.google.com/o/oauth2/v2/auth?"+params.Encode(), http.StatusFound)
 }
 
 func proto(r *http.Request) string {
