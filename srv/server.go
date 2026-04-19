@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -668,10 +669,12 @@ func (s *Server) handleDeleteTrip(w http.ResponseWriter, r *http.Request) {
 	}
 	q := dbgen.New(s.DB)
 
-	// Delete uploaded photo files for this trip
+	// Delete uploaded photo/video files for this trip
 	photos, _ := q.ListPhotos(r.Context(), id)
 	for _, p := range photos {
 		os.Remove(filepath.Join(s.UploadDir, p.Filename))
+		os.Remove(filepath.Join(s.UploadDir, "thumbs", p.Filename))
+		os.Remove(filepath.Join(s.UploadDir, "thumbs", p.Filename+".jpg"))
 	}
 
 	if err := q.DeleteTrip(r.Context(), id); err != nil {
@@ -1068,6 +1071,81 @@ func imageDimensions(data []byte) (int, int) {
 	return cfg.Width, cfg.Height
 }
 
+// isVideoFile checks if a filename has a video extension.
+func isVideoFile(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".3gp":
+		return true
+	}
+	return false
+}
+
+// isVideoMIME checks if a MIME type is a video type.
+func isVideoMIME(mimeType string) bool {
+	return strings.HasPrefix(mimeType, "video/")
+}
+
+// videoThumbnail generates a JPEG thumbnail from a video file using ffmpeg.
+// Returns the thumbnail JPEG data, or an error.
+func videoThumbnail(videoPath string, maxDim int) ([]byte, error) {
+	// Extract a frame at 1 second (or the first frame if shorter)
+	cmd := exec.Command("ffmpeg",
+		"-i", videoPath,
+		"-ss", "1",
+		"-vframes", "1",
+		"-vf", fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", maxDim, maxDim),
+		"-f", "image2",
+		"-c:v", "mjpeg",
+		"-q:v", "5",
+		"pipe:1",
+	)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		// Try without -ss (very short videos)
+		cmd2 := exec.Command("ffmpeg",
+			"-i", videoPath,
+			"-vframes", "1",
+			"-vf", fmt.Sprintf("scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease", maxDim, maxDim),
+			"-f", "image2",
+			"-c:v", "mjpeg",
+			"-q:v", "5",
+			"pipe:1",
+		)
+		stdout.Reset()
+		cmd2.Stdout = &stdout
+		cmd2.Stderr = &stderr
+		if err := cmd2.Run(); err != nil {
+			return nil, fmt.Errorf("ffmpeg thumbnail: %w: %s", err, stderr.String())
+		}
+	}
+	return stdout.Bytes(), nil
+}
+
+// videoDimensions uses ffprobe to get video width and height.
+func videoDimensions(videoPath string) (int, int) {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=width,height",
+		"-of", "csv=p=0:s=x",
+		videoPath,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, 0
+	}
+	parts := strings.Split(strings.TrimSpace(string(out)), "x")
+	if len(parts) != 2 {
+		return 0, 0
+	}
+	w, _ := strconv.Atoi(parts[0])
+	h, _ := strconv.Atoi(parts[1])
+	return w, h
+}
+
 func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	tripID := r.PathValue("id")
 	if _, _, ok := s.requireTripOwner(w, r, tripID); !ok {
@@ -1076,8 +1154,8 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 
 	q := dbgen.New(s.DB)
 
-	// Parse multipart form (32 MB max)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	// Parse multipart form (200 MB max to support video uploads)
+	if err := r.ParseMultipartForm(200 << 20); err != nil {
 		jsonError(w, "failed to parse multipart form", http.StatusBadRequest)
 		return
 	}
@@ -1089,10 +1167,10 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// Read entire file into memory for EXIF + dimension parsing
+	// Read entire file into memory
 	fileData, err := io.ReadAll(file)
 	if err != nil {
-		jsonError(w, "failed to read photo", http.StatusInternalServerError)
+		jsonError(w, "failed to read file", http.StatusInternalServerError)
 		return
 	}
 
@@ -1103,18 +1181,35 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 	filename := uuid.New().String() + ext
 
+	// Detect if this is a video
+	videoUpload := isVideoFile(header.Filename) || isVideoMIME(header.Header.Get("Content-Type"))
+
 	// Save to upload dir
 	dstPath := filepath.Join(s.UploadDir, filename)
 	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil {
-		jsonError(w, "failed to save photo", http.StatusInternalServerError)
+		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
 	}
 
-	// Extract EXIF GPS + timestamp
-	exifLat, exifLng, exifTime := extractEXIF(fileData)
+	var exifLat, exifLng *float64
+	var exifTime *time.Time
+	var imgW, imgH int
 
-	// Extract image dimensions
-	imgW, imgH := imageDimensions(fileData)
+	if videoUpload {
+		// Use ffprobe for video dimensions
+		imgW, imgH = videoDimensions(dstPath)
+		// Pre-generate video thumbnail
+		if thumbData, err := videoThumbnail(dstPath, 128); err == nil {
+			thumbDir := filepath.Join(s.UploadDir, "thumbs")
+			os.MkdirAll(thumbDir, 0755)
+			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644)
+		}
+	} else {
+		// Extract EXIF GPS + timestamp from images
+		exifLat, exifLng, exifTime = extractEXIF(fileData)
+		// Extract image dimensions
+		imgW, imgH = imageDimensions(fileData)
+	}
 
 	// Form fields override EXIF if provided
 	var lat, lng *float64
@@ -1151,6 +1246,11 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	id := uuid.New().String()
 	now := time.Now()
 
+	var isVideo int64
+	if videoUpload {
+		isVideo = 1
+	}
+
 	if err := q.CreatePhoto(r.Context(), dbgen.CreatePhotoParams{
 		ID:           id,
 		TripID:       tripID,
@@ -1165,6 +1265,7 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		Height:       int64(imgH),
 		SizeBytes:    int64(len(fileData)),
 		CreatedAt:    now,
+		IsVideo:      isVideo,
 	}); err != nil {
 		os.Remove(dstPath)
 		jsonError(w, "failed to create photo record", http.StatusInternalServerError)
@@ -1252,6 +1353,7 @@ func (s *Server) handleDeletePhoto(w http.ResponseWriter, r *http.Request) {
 	// Remove file and thumbnail from disk
 	os.Remove(filepath.Join(s.UploadDir, photo.Filename))
 	os.Remove(filepath.Join(s.UploadDir, "thumbs", photo.Filename))
+	os.Remove(filepath.Join(s.UploadDir, "thumbs", photo.Filename+".jpg")) // video thumb
 
 	if err := q.DeletePhoto(r.Context(), id); err != nil {
 		jsonError(w, "failed to delete photo", http.StatusInternalServerError)
@@ -1284,6 +1386,22 @@ func (s *Server) handleRescanPhoto(w http.ResponseWriter, r *http.Request) {
 
 	// Read file from disk
 	filePath := filepath.Join(s.UploadDir, photo.Filename)
+
+	// Skip rescan for video files (no EXIF data)
+	if photo.IsVideo != 0 {
+		updated, err := q.GetPhoto(ctx, id)
+		if err != nil {
+			jsonError(w, "failed to read photo", http.StatusInternalServerError)
+			return
+		}
+		type rescanResult struct {
+			dbgen.Photo
+			Found bool `json:"location_found"`
+		}
+		jsonOK(w, rescanResult{Photo: updated, Found: false})
+		return
+	}
+
 	fileData, err := os.ReadFile(filePath)
 	if err != nil {
 		jsonError(w, "photo file not found on disk", http.StatusNotFound)
@@ -1350,6 +1468,12 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	thumbDir := filepath.Join(s.UploadDir, "thumbs")
 	thumbPath := filepath.Join(thumbDir, filename)
 
+	// For video files, thumbnail is stored as filename.jpg
+	isVid := isVideoFile(filename)
+	if isVid {
+		thumbPath = filepath.Join(thumbDir, filename+".jpg")
+	}
+
 	// Serve cached thumbnail if it exists
 	if info, err := os.Stat(thumbPath); err == nil {
 		w.Header().Set("Content-Type", "image/jpeg")
@@ -1359,8 +1483,25 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate thumbnail
 	srcPath := filepath.Join(s.UploadDir, filename)
+
+	if isVid {
+		// Generate video thumbnail via ffmpeg
+		thumbData, err := videoThumbnail(srcPath, 128)
+		if err != nil {
+			http.Error(w, "failed to generate video thumbnail", http.StatusInternalServerError)
+			return
+		}
+		os.MkdirAll(thumbDir, 0755)
+		os.WriteFile(thumbPath, thumbData, 0644)
+		w.Header().Set("Content-Type", "image/jpeg")
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		w.Header().Set("Content-Length", strconv.Itoa(len(thumbData)))
+		w.Write(thumbData)
+		return
+	}
+
+	// Generate image thumbnail
 	srcFile, err := os.Open(srcPath)
 	if err != nil {
 		http.NotFound(w, r)
@@ -1429,11 +1570,12 @@ func (s *Server) handleResetTrip(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := dbgen.New(s.DB)
 
-	// Delete photo files from disk
+	// Delete photo/video files from disk
 	photos, _ := q.ListPhotos(ctx, trip.ID)
 	for _, p := range photos {
 		os.Remove(filepath.Join(s.UploadDir, p.Filename))
 		os.Remove(filepath.Join(s.UploadDir, "thumbs", p.Filename))
+		os.Remove(filepath.Join(s.UploadDir, "thumbs", p.Filename+".jpg"))
 	}
 
 	// Delete all child records

@@ -77,8 +77,8 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) er
 }
 
 const createPhoto = `-- name: CreatePhoto :exec
-INSERT INTO photos (id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO photos (id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, is_video)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type CreatePhotoParams struct {
@@ -95,6 +95,7 @@ type CreatePhotoParams struct {
 	Height       int64      `json:"height"`
 	SizeBytes    int64      `json:"size_bytes"`
 	CreatedAt    time.Time  `json:"created_at"`
+	IsVideo      int64      `json:"is_video"`
 }
 
 func (q *Queries) CreatePhoto(ctx context.Context, arg CreatePhotoParams) error {
@@ -112,6 +113,7 @@ func (q *Queries) CreatePhoto(ctx context.Context, arg CreatePhotoParams) error 
 		arg.Height,
 		arg.SizeBytes,
 		arg.CreatedAt,
+		arg.IsVideo,
 	)
 	return err
 }
@@ -297,7 +299,7 @@ func (q *Queries) GetComment(ctx context.Context, id string) (Comment, error) {
 }
 
 const getPhoto = `-- name: GetPhoto :one
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range FROM photos WHERE id = ?
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE id = ?
 `
 
 func (q *Queries) GetPhoto(ctx context.Context, id string) (Photo, error) {
@@ -320,6 +322,7 @@ func (q *Queries) GetPhoto(ctx context.Context, id string) (Photo, error) {
 		&i.CamHeading,
 		&i.CamPitch,
 		&i.CamRange,
+		&i.IsVideo,
 	)
 	return i, err
 }
@@ -493,7 +496,7 @@ func (q *Queries) ListCommentsByTrip(ctx context.Context, tripID string) ([]Comm
 }
 
 const listPhotos = `-- name: ListPhotos :many
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range FROM photos WHERE trip_id = ? ORDER BY created_at ASC
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE trip_id = ? ORDER BY created_at ASC
 `
 
 func (q *Queries) ListPhotos(ctx context.Context, tripID string) ([]Photo, error) {
@@ -522,6 +525,7 @@ func (q *Queries) ListPhotos(ctx context.Context, tripID string) ([]Photo, error
 			&i.CamHeading,
 			&i.CamPitch,
 			&i.CamRange,
+			&i.IsVideo,
 		); err != nil {
 			return nil, err
 		}
@@ -537,7 +541,7 @@ func (q *Queries) ListPhotos(ctx context.Context, tripID string) ([]Photo, error
 }
 
 const listPhotosByStop = `-- name: ListPhotosByStop :many
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range FROM photos WHERE stop_id = ? ORDER BY created_at ASC
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE stop_id = ? ORDER BY created_at ASC
 `
 
 func (q *Queries) ListPhotosByStop(ctx context.Context, stopID *string) ([]Photo, error) {
@@ -566,6 +570,7 @@ func (q *Queries) ListPhotosByStop(ctx context.Context, stopID *string) ([]Photo
 			&i.CamHeading,
 			&i.CamPitch,
 			&i.CamRange,
+			&i.IsVideo,
 		); err != nil {
 			return nil, err
 		}
@@ -581,7 +586,7 @@ func (q *Queries) ListPhotosByStop(ctx context.Context, stopID *string) ([]Photo
 }
 
 const listPhotosWithLocation = `-- name: ListPhotosWithLocation :many
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range FROM photos WHERE trip_id = ? AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY taken_at ASC, created_at ASC
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE trip_id = ? AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY taken_at ASC, created_at ASC
 `
 
 func (q *Queries) ListPhotosWithLocation(ctx context.Context, tripID string) ([]Photo, error) {
@@ -610,6 +615,7 @@ func (q *Queries) ListPhotosWithLocation(ctx context.Context, tripID string) ([]
 			&i.CamHeading,
 			&i.CamPitch,
 			&i.CamRange,
+			&i.IsVideo,
 		); err != nil {
 			return nil, err
 		}

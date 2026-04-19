@@ -37,8 +37,8 @@ UPDATE stops SET title = ?, description = ?, lat = ?, lng = ?, elevation = ?, st
 DELETE FROM stops WHERE id = ?;
 
 -- name: CreatePhoto :exec
-INSERT INTO photos (id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO photos (id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, is_video)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListPhotos :many
 SELECT * FROM photos WHERE trip_id = ? ORDER BY created_at ASC;

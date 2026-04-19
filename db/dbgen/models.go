@@ -40,6 +40,7 @@ type Photo struct {
 	CamHeading   *float64   `json:"cam_heading"`
 	CamPitch     *float64   `json:"cam_pitch"`
 	CamRange     *float64   `json:"cam_range"`
+	IsVideo      int64      `json:"is_video"`
 }
 
 type Route struct {

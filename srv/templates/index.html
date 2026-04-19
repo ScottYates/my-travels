@@ -571,6 +571,35 @@ textarea.form-input {
   font-weight: 600;
 }
 
+.photo-video-badge {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  background: rgba(0,0,0,0.7);
+  color: white;
+  font-size: 10px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.photo-video-badge::before {
+  content: '▶';
+  font-size: 8px;
+}
+
+/* Video in photo modal */
+#photoModalVideo {
+  max-width: 100%;
+  max-height: 55vh;
+  display: block;
+  margin: 0 auto;
+  border-radius: 6px;
+  background: #000;
+}
+
 /* Drop zone */
 .drop-zone {
   border: 2px dashed var(--border);
@@ -1855,6 +1884,7 @@ body.no-auth .readonly-badge { display: none !important; }
 <!-- Full-resolution image overlay -->
 <div class="fullres-overlay" id="fullresOverlay">
   <img id="fullresImg" src="" alt="">
+  <video id="fullresVideo" controls playsinline style="display:none; max-width:95vw; max-height:95vh;"></video>
   <div class="fullres-hint" id="fullresHint">Click anywhere to close</div>
 </div>
 
@@ -1863,6 +1893,7 @@ body.no-auth .readonly-badge { display: none !important; }
   <button class="photo-nav photo-nav-prev" id="photoNavPrev">‹</button>
   <button class="photo-nav photo-nav-next" id="photoNavNext">›</button>
   <img id="photoModalImg" src="" alt="">
+  <video id="photoModalVideo" controls playsinline style="display:none"></video>
   <div class="photo-modal-info">
     <input type="text" id="photoModalCaption" placeholder="Add a caption...">
     <button class="btn btn-primary btn-sm edit-only" id="photoModalSave">Save</button>
@@ -4148,9 +4179,9 @@ function renderTripDetail() {
   // Drop zone
   html += '<div class="drop-zone edit-only" id="photoDropZone">';
   html += '<div class="drop-icon">📷</div>';
-  html += '<p>Drop photos here or click to upload</p>';
-  html += '<p class="drop-hint">JPG, PNG up to 32MB</p>';
-  html += '<input type="file" id="photoFileInput" accept="image/*" multiple style="display:none">';
+  html += '<p>Drop photos or videos here, or click to upload</p>';
+  html += '<p class="drop-hint">JPG, PNG, MP4, MOV up to 200MB</p>';
+  html += '<input type="file" id="photoFileInput" accept="image/*,video/*" multiple style="display:none">';
   html += '</div>';
   html += '<div class="upload-queue edit-only" id="uploadQueue"></div>';
 
@@ -4191,6 +4222,9 @@ function renderTripDetail() {
         html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '">';
         html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
         html += '<div class="photo-overlay"><span>' + escapeHtml(photo.caption || photo.original_name) + '</span></div>';
+        if (photo.is_video) {
+          html += '<span class="photo-video-badge">VIDEO</span>';
+        }
         if (!hasLocation) {
           html += '<span class="photo-no-location">No 📍</span>';
         }
@@ -4621,15 +4655,18 @@ function checkAllUploadsFinished() {
   }, 300);
 }
 
-function createUploadItem(id, fileName, thumbURL) {
+function createUploadItem(id, fileName, thumbURL, isVideo) {
   const container = $('#uploadQueue');
   if (!container) return null;
 
   const el = document.createElement('div');
   el.className = 'upload-item';
   el.id = 'upload-' + id;
+  var thumbHtml = isVideo
+    ? '<div class="upload-thumb" style="display:flex;align-items:center;justify-content:center;background:#222;color:#fff;font-size:24px">▶</div>'
+    : '<img class="upload-thumb" src="' + (thumbURL || '') + '" alt="">';
   el.innerHTML =
-    '<img class="upload-thumb" src="' + (thumbURL || '') + '" alt="">' +
+    thumbHtml +
     '<div class="upload-info">' +
       '<div class="upload-name">' + escapeHtml(fileName) + '</div>' +
       '<div class="upload-status">Queued</div>' +
@@ -4662,7 +4699,7 @@ function updateUploadItemDone(info) {
   if (bar) { bar.style.width = '100%'; bar.classList.add('done'); }
   if (pctEl) pctEl.outerHTML = '<span class="upload-check">✅</span>';
   if (statusEl) {
-    statusEl.textContent = 'Complete — EXIF location extracted';
+    statusEl.textContent = 'Complete';
     statusEl.style.color = 'var(--green)';
   }
 }
@@ -4778,14 +4815,15 @@ function uploadPhotos(files) {
     const file = files[i];
     const id = ++uploadIdCounter;
     const thumbURL = URL.createObjectURL(file);
-    const el = createUploadItem(id, file.name, thumbURL);
+    const fileIsVideo = file.type.startsWith('video/');
+    const el = createUploadItem(id, file.name, thumbURL, fileIsVideo);
 
     const job = {
       id: id,
       url: url,
       file: file,
       fileName: file.name,
-      mimeType: file.type || 'image/jpeg',
+      mimeType: file.type || 'application/octet-stream',
       fileSize: file.size,
       el: el,
       retries: 0,
@@ -4799,7 +4837,7 @@ function uploadPhotos(files) {
   }
 
   if (files.length > 0) {
-    toast(files.length + ' photo(s) queued for upload');
+    toast(files.length + ' file(s) queued for upload');
     updateUploadSummary();
     dispatchNext();
   }
@@ -4831,7 +4869,20 @@ function openPhotoModal(photoId) {
 }
 
 function showPhotoInModal(photo) {
-  $('#photoModalImg').src = '/uploads/' + photo.filename;
+  const imgEl = $('#photoModalImg');
+  const vidEl = $('#photoModalVideo');
+  if (photo.is_video) {
+    imgEl.style.display = 'none';
+    imgEl.src = '';
+    vidEl.src = '/uploads/' + photo.filename;
+    vidEl.style.display = '';
+  } else {
+    vidEl.style.display = 'none';
+    vidEl.src = '';
+    vidEl.pause && vidEl.pause();
+    imgEl.src = '/uploads/' + photo.filename;
+    imgEl.style.display = '';
+  }
   $('#photoModalCaption').value = photo.caption || '';
   const hasLoc = photo.lat != null && photo.lng != null;
   $('#photoModalRescan').style.display = hasLoc ? 'none' : '';
@@ -4867,20 +4918,49 @@ function navigatePhoto(dir) {
 $('#photoNavPrev').addEventListener('click', (e) => { e.stopPropagation(); navigatePhoto(-1); });
 $('#photoNavNext').addEventListener('click', (e) => { e.stopPropagation(); navigatePhoto(1); });
 
-// Click modal image → show full resolution
-$('#photoModalImg').addEventListener('click', (e) => {
-  e.stopPropagation();
-  $('#fullresImg').src = $('#photoModalImg').src;
+// Click modal image/video → show full resolution
+function openFullRes() {
+  const photo = (state.currentTrip?.photos || []).find(p => p.id === state.selectedPhotoId);
+  if (!photo) return;
+  if (photo.is_video) {
+    $('#fullresImg').style.display = 'none';
+    $('#fullresImg').src = '';
+    $('#fullresVideo').src = '/uploads/' + photo.filename;
+    $('#fullresVideo').style.display = '';
+  } else {
+    $('#fullresVideo').style.display = 'none';
+    $('#fullresVideo').src = '';
+    $('#fullresImg').src = '/uploads/' + photo.filename;
+    $('#fullresImg').style.display = '';
+  }
   $('#fullresOverlay').classList.add('active');
   const hint = $('#fullresHint');
   hint.classList.remove('fade');
   setTimeout(() => hint.classList.add('fade'), 2000);
+}
+$('#photoModalImg').addEventListener('click', (e) => {
+  e.stopPropagation();
+  openFullRes();
+});
+$('#photoModalVideo').addEventListener('click', (e) => {
+  // Don't open full-res on video click — let native controls work
+  // Instead provide a double-click to go full-res
+});
+$('#photoModalVideo').addEventListener('dblclick', (e) => {
+  e.stopPropagation();
+  openFullRes();
 });
 
 // Close full-res overlay on click
-$('#fullresOverlay').addEventListener('click', () => {
+$('#fullresOverlay').addEventListener('click', (e) => {
+  // Don't close if clicking on the video controls
+  if (e.target.tagName === 'VIDEO') return;
   $('#fullresOverlay').classList.remove('active');
   $('#fullresImg').src = '';
+  $('#fullresVideo').pause && $('#fullresVideo').pause();
+  $('#fullresVideo').src = '';
+  $('#fullresVideo').style.display = 'none';
+  $('#fullresImg').style.display = '';
 });
 
 // Escape key closes full-res first, then modal
@@ -4890,6 +4970,10 @@ document.addEventListener('keydown', (e) => {
       e.stopImmediatePropagation();
       $('#fullresOverlay').classList.remove('active');
       $('#fullresImg').src = '';
+      $('#fullresVideo').pause && $('#fullresVideo').pause();
+      $('#fullresVideo').src = '';
+      $('#fullresVideo').style.display = 'none';
+      $('#fullresImg').style.display = '';
     }
   }
   // Arrow keys navigate photos when modal is open
@@ -4901,6 +4985,9 @@ document.addEventListener('keydown', (e) => {
 
 $('#photoModalClose').addEventListener('click', () => {
   $('#photoModal').classList.remove('active');
+  // Stop video playback when closing modal
+  var mv = $('#photoModalVideo');
+  if (mv) { mv.pause(); mv.src = ''; }
   state.selectedPhotoId = null;
   state.focusedPhotoId = null;
   $('#camToolbar').classList.remove('active');
@@ -6281,7 +6368,7 @@ function presCacheAhead(fromIdx) {
   let cached = 0;
   for (let i = fromIdx + 1; i < presSlides.length && cached < 2; i++) {
     const s = presSlides[i];
-    if (s.type === 'photo' && s.photo && !presImageCache.has(s.photo.filename)) {
+    if (s.type === 'photo' && s.photo && !s.photo.is_video && !presImageCache.has(s.photo.filename)) {
       const img = new Image();
       img.src = '/uploads/' + s.photo.filename;
       presImageCache.set(s.photo.filename, img);
@@ -6292,6 +6379,9 @@ function presCacheAhead(fromIdx) {
 
 function showPresSlide(idx) {
   if (idx < 0 || idx >= presSlides.length) return;
+  // Stop any playing video before switching slides
+  var prevVid = presContent.querySelector('video');
+  if (prevVid) { prevVid.pause(); prevVid.src = ''; }
   presIndex = idx;
   const slide = presSlides[idx];
 
@@ -6323,16 +6413,28 @@ function showPresPhoto(slide) {
   const container = document.createElement('div');
   container.className = 'pres-photo-slide active';
 
-  const img = document.createElement('img');
-  const cached = presImageCache.get(slide.photo.filename);
-  if (cached && cached.complete && cached.naturalWidth > 0) {
-    img.src = cached.src;
+  if (slide.photo.is_video) {
+    const vid = document.createElement('video');
+    vid.src = '/uploads/' + slide.photo.filename;
+    vid.controls = true;
+    vid.playsInline = true;
+    vid.autoplay = true;
+    vid.style.maxWidth = '100%';
+    vid.style.maxHeight = '100%';
+    vid.style.objectFit = 'contain';
+    container.appendChild(vid);
   } else {
-    img.src = '/uploads/' + slide.photo.filename;
+    const img = document.createElement('img');
+    const cached = presImageCache.get(slide.photo.filename);
+    if (cached && cached.complete && cached.naturalWidth > 0) {
+      img.src = cached.src;
+    } else {
+      img.src = '/uploads/' + slide.photo.filename;
+    }
+    img.alt = slide.caption || '';
+    img.draggable = false;
+    container.appendChild(img);
   }
-  img.alt = slide.caption || '';
-  img.draggable = false;
-  container.appendChild(img);
   presContent.appendChild(container);
 
   // Caption
