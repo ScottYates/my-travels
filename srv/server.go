@@ -268,6 +268,10 @@ func (s *Server) Serve(addr string) error {
 	// Photo rescan EXIF
 	mux.HandleFunc("POST /api/photos/{id}/rescan", s.handleRescanPhoto)
 
+	// Photo assignment & reordering
+	mux.HandleFunc("POST /api/photos/{id}/assign", s.handleAssignPhoto)
+	mux.HandleFunc("POST /api/photos/reorder", s.handleReorderPhotos)
+
 	// Trip reset & auto-stops
 	mux.HandleFunc("POST /api/trips/{id}/reset", s.handleResetTrip)
 	mux.HandleFunc("POST /api/trips/{id}/auto-stops", s.handleAutoStops)
@@ -1451,6 +1455,111 @@ func (s *Server) handleRescanPhoto(w http.ResponseWriter, r *http.Request) {
 		Found bool `json:"location_found"`
 	}
 	jsonOK(w, rescanResult{Photo: updated, Found: found})
+}
+
+// ---------------------------------------------------------------------------
+// Photo assignment & reordering
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleAssignPhoto(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	photo, _, ok := s.requirePhotoOwner(w, r, id)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		StopID *string `json:"stop_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	q := dbgen.New(s.DB)
+
+	// If assigning to a stop, verify the stop belongs to the same trip
+	if body.StopID != nil && *body.StopID != "" {
+		stop, err := q.GetStop(r.Context(), *body.StopID)
+		if err != nil {
+			jsonError(w, "stop not found", http.StatusNotFound)
+			return
+		}
+		if stop.TripID != photo.TripID {
+			jsonError(w, "stop belongs to a different trip", http.StatusBadRequest)
+			return
+		}
+	}
+
+	newStopID := body.StopID
+	if body.StopID != nil && *body.StopID == "" {
+		newStopID = nil // unassign
+	}
+
+	if err := q.SetPhotoStopID(r.Context(), dbgen.SetPhotoStopIDParams{
+		StopID: newStopID,
+		ID:     id,
+	}); err != nil {
+		jsonError(w, "failed to assign photo", http.StatusInternalServerError)
+		return
+	}
+
+	updated, _ := q.GetPhoto(r.Context(), id)
+	jsonOK(w, updated)
+}
+
+func (s *Server) handleReorderPhotos(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PhotoIDs []string `json:"photo_ids"`
+		StopID   *string  `json:"stop_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if len(body.PhotoIDs) == 0 {
+		jsonOK(w, map[string]string{"status": "ok"})
+		return
+	}
+
+	// Verify ownership of the first photo to get the trip
+	firstPhoto, _, ok := s.requirePhotoOwner(w, r, body.PhotoIDs[0])
+	if !ok {
+		return
+	}
+
+	q := dbgen.New(s.DB)
+
+	// Verify stop belongs to same trip if provided
+	if body.StopID != nil && *body.StopID != "" {
+		stop, err := q.GetStop(r.Context(), *body.StopID)
+		if err != nil {
+			jsonError(w, "stop not found", http.StatusNotFound)
+			return
+		}
+		if stop.TripID != firstPhoto.TripID {
+			jsonError(w, "stop belongs to a different trip", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Update each photo's order (and stop assignment)
+	for i, pid := range body.PhotoIDs {
+		stopID := body.StopID
+		if stopID != nil && *stopID == "" {
+			stopID = nil
+		}
+		if err := q.SetPhotoStopAndOrder(r.Context(), dbgen.SetPhotoStopAndOrderParams{
+			StopID:     stopID,
+			PhotoOrder: int64(i),
+			ID:         pid,
+		}); err != nil {
+			jsonError(w, "failed to reorder photo "+pid, http.StatusInternalServerError)
+			return
+		}
+	}
+
+	jsonOK(w, map[string]string{"status": "ok"})
 }
 
 // ---------------------------------------------------------------------------

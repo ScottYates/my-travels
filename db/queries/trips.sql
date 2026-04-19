@@ -41,10 +41,10 @@ INSERT INTO photos (id, trip_id, stop_id, filename, original_name, caption, lat,
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListPhotos :many
-SELECT * FROM photos WHERE trip_id = ? ORDER BY created_at ASC;
+SELECT * FROM photos WHERE trip_id = ? ORDER BY photo_order ASC, created_at ASC;
 
 -- name: ListPhotosByStop :many
-SELECT * FROM photos WHERE stop_id = ? ORDER BY created_at ASC;
+SELECT * FROM photos WHERE stop_id = ? ORDER BY photo_order ASC, created_at ASC;
 
 -- name: GetPhoto :one
 SELECT * FROM photos WHERE id = ?;
@@ -88,6 +88,12 @@ UPDATE trips SET cover_photo_id = NULL, default_cam_heading = NULL, default_cam_
 
 -- name: SetPhotoStopID :exec
 UPDATE photos SET stop_id = ? WHERE id = ?;
+
+-- name: UpdatePhotoOrder :exec
+UPDATE photos SET photo_order = ? WHERE id = ?;
+
+-- name: SetPhotoStopAndOrder :exec
+UPDATE photos SET stop_id = ?, photo_order = ? WHERE id = ?;
 
 -- name: ClearPhotoStopIDs :exec
 UPDATE photos SET stop_id = NULL WHERE trip_id = ?;

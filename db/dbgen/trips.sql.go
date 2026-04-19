@@ -299,7 +299,7 @@ func (q *Queries) GetComment(ctx context.Context, id string) (Comment, error) {
 }
 
 const getPhoto = `-- name: GetPhoto :one
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE id = ?
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video, photo_order FROM photos WHERE id = ?
 `
 
 func (q *Queries) GetPhoto(ctx context.Context, id string) (Photo, error) {
@@ -323,6 +323,7 @@ func (q *Queries) GetPhoto(ctx context.Context, id string) (Photo, error) {
 		&i.CamPitch,
 		&i.CamRange,
 		&i.IsVideo,
+		&i.PhotoOrder,
 	)
 	return i, err
 }
@@ -496,7 +497,7 @@ func (q *Queries) ListCommentsByTrip(ctx context.Context, tripID string) ([]Comm
 }
 
 const listPhotos = `-- name: ListPhotos :many
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE trip_id = ? ORDER BY created_at ASC
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video, photo_order FROM photos WHERE trip_id = ? ORDER BY photo_order ASC, created_at ASC
 `
 
 func (q *Queries) ListPhotos(ctx context.Context, tripID string) ([]Photo, error) {
@@ -526,6 +527,7 @@ func (q *Queries) ListPhotos(ctx context.Context, tripID string) ([]Photo, error
 			&i.CamPitch,
 			&i.CamRange,
 			&i.IsVideo,
+			&i.PhotoOrder,
 		); err != nil {
 			return nil, err
 		}
@@ -541,7 +543,7 @@ func (q *Queries) ListPhotos(ctx context.Context, tripID string) ([]Photo, error
 }
 
 const listPhotosByStop = `-- name: ListPhotosByStop :many
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE stop_id = ? ORDER BY created_at ASC
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video, photo_order FROM photos WHERE stop_id = ? ORDER BY photo_order ASC, created_at ASC
 `
 
 func (q *Queries) ListPhotosByStop(ctx context.Context, stopID *string) ([]Photo, error) {
@@ -571,6 +573,7 @@ func (q *Queries) ListPhotosByStop(ctx context.Context, stopID *string) ([]Photo
 			&i.CamPitch,
 			&i.CamRange,
 			&i.IsVideo,
+			&i.PhotoOrder,
 		); err != nil {
 			return nil, err
 		}
@@ -586,7 +589,7 @@ func (q *Queries) ListPhotosByStop(ctx context.Context, stopID *string) ([]Photo
 }
 
 const listPhotosWithLocation = `-- name: ListPhotosWithLocation :many
-SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video FROM photos WHERE trip_id = ? AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY taken_at ASC, created_at ASC
+SELECT id, trip_id, stop_id, filename, original_name, caption, lat, lng, taken_at, width, height, size_bytes, created_at, cam_heading, cam_pitch, cam_range, is_video, photo_order FROM photos WHERE trip_id = ? AND lat IS NOT NULL AND lng IS NOT NULL ORDER BY taken_at ASC, created_at ASC
 `
 
 func (q *Queries) ListPhotosWithLocation(ctx context.Context, tripID string) ([]Photo, error) {
@@ -616,6 +619,7 @@ func (q *Queries) ListPhotosWithLocation(ctx context.Context, tripID string) ([]
 			&i.CamPitch,
 			&i.CamRange,
 			&i.IsVideo,
+			&i.PhotoOrder,
 		); err != nil {
 			return nil, err
 		}
@@ -813,6 +817,21 @@ func (q *Queries) ResetTripDefaults(ctx context.Context, arg ResetTripDefaultsPa
 	return err
 }
 
+const setPhotoStopAndOrder = `-- name: SetPhotoStopAndOrder :exec
+UPDATE photos SET stop_id = ?, photo_order = ? WHERE id = ?
+`
+
+type SetPhotoStopAndOrderParams struct {
+	StopID     *string `json:"stop_id"`
+	PhotoOrder int64   `json:"photo_order"`
+	ID         string  `json:"id"`
+}
+
+func (q *Queries) SetPhotoStopAndOrder(ctx context.Context, arg SetPhotoStopAndOrderParams) error {
+	_, err := q.db.ExecContext(ctx, setPhotoStopAndOrder, arg.StopID, arg.PhotoOrder, arg.ID)
+	return err
+}
+
 const setPhotoStopID = `-- name: SetPhotoStopID :exec
 UPDATE photos SET stop_id = ? WHERE id = ?
 `
@@ -868,6 +887,20 @@ func (q *Queries) UpdatePhoto(ctx context.Context, arg UpdatePhotoParams) error 
 		arg.CamRange,
 		arg.ID,
 	)
+	return err
+}
+
+const updatePhotoOrder = `-- name: UpdatePhotoOrder :exec
+UPDATE photos SET photo_order = ? WHERE id = ?
+`
+
+type UpdatePhotoOrderParams struct {
+	PhotoOrder int64  `json:"photo_order"`
+	ID         string `json:"id"`
+}
+
+func (q *Queries) UpdatePhotoOrder(ctx context.Context, arg UpdatePhotoOrderParams) error {
+	_, err := q.db.ExecContext(ctx, updatePhotoOrder, arg.PhotoOrder, arg.ID)
 	return err
 }
 

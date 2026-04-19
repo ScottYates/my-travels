@@ -590,6 +590,40 @@ textarea.form-input {
   font-size: 8px;
 }
 
+/* Drag and drop for photo assignment & reordering */
+.photo-thumb[draggable="true"] { cursor: grab; }
+.photo-thumb[draggable="true"]:active { cursor: grabbing; }
+.photo-thumb.dragging { opacity: 0.3; }
+.photo-thumb.drag-over-before {
+  box-shadow: -3px 0 0 0 var(--orange);
+}
+.photo-thumb.drag-over-after {
+  box-shadow: 3px 0 0 0 var(--orange);
+}
+.stop-item.drop-target {
+  outline: 2px dashed var(--orange);
+  outline-offset: -2px;
+  background: rgba(255,165,0,0.08);
+}
+.photo-stop-sep.drop-target {
+  color: var(--accent);
+}
+.photo-grid.drop-target-grid {
+  outline: 2px dashed var(--orange);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.photo-modal-stop-select {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  max-width: 180px;
+}
+.photo-modal-stop-select:focus { outline: none; border-color: var(--accent); }
+
 /* Video in photo modal */
 #photoModalVideo {
   max-width: 100%;
@@ -1896,6 +1930,7 @@ body.no-auth .readonly-badge { display: none !important; }
   <video id="photoModalVideo" controls playsinline style="display:none"></video>
   <div class="photo-modal-info">
     <input type="text" id="photoModalCaption" placeholder="Add a caption...">
+    <select id="photoModalStop" class="photo-modal-stop-select edit-only"><option value="">No stop</option></select>
     <button class="btn btn-primary btn-sm edit-only" id="photoModalSave">Save</button>
     <button class="btn btn-secondary btn-sm edit-only" id="photoModalGeotag">📍 Set Location</button>
     <button class="btn btn-secondary btn-sm edit-only" id="photoModalRescan">🔍 Rescan EXIF</button>
@@ -4188,6 +4223,7 @@ function renderTripDetail() {
   if (photos.length > 0) {
     // Sort photos by taken_at ascending, then created_at as fallback
     const sortedPhotos = photos.slice().sort((a, b) => {
+      if (a.photo_order !== b.photo_order) return a.photo_order - b.photo_order;
       const ta = a.taken_at || a.created_at || '';
       const tb = b.taken_at || b.created_at || '';
       return ta < tb ? -1 : ta > tb ? 1 : 0;
@@ -4210,17 +4246,19 @@ function renderTripDetail() {
       groups.push({stop: null, photos: sortedPhotos});
     }
 
+    const isEdit = !state.readOnly;
     groups.forEach(g => {
+      const gStopId = g.stop ? escapeHtml(g.stop.id) : '';
       if (g.stop) {
-        html += '<div class="photo-stop-sep"><span>' + escapeHtml(g.stop.title || 'Untitled Stop') + '</span></div>';
+        html += '<div class="photo-stop-sep" data-stop-id="' + gStopId + '"><span>' + escapeHtml(g.stop.title || 'Untitled Stop') + '</span></div>';
       } else if (groups.length > 1) {
-        html += '<div class="photo-stop-sep"><span>Unassigned</span></div>';
+        html += '<div class="photo-stop-sep" data-stop-id=""><span>Unassigned</span></div>';
       }
-      html += '<div class="photo-grid">';
+      html += '<div class="photo-grid" data-stop-id="' + gStopId + '">';
       g.photos.forEach(photo => {
         const hasLocation = photo.lat != null && photo.lng != null;
-        html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '">';
-        html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
+        html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '"' + (isEdit ? ' draggable="true"' : '') + '>';
+        html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy" draggable="false">';
         html += '<div class="photo-overlay"><span>' + escapeHtml(photo.caption || photo.original_name) + '</span></div>';
         if (photo.is_video) {
           html += '<span class="photo-video-badge">VIDEO</span>';
@@ -4232,6 +4270,13 @@ function renderTripDetail() {
       });
       html += '</div>';
     });
+
+    // Always show an "Unassigned" drop zone in edit mode if there are stops
+    // and there's no unassigned group already
+    if (isEdit && stopOrder.length > 0 && !groups.some(g => !g.stop)) {
+      html += '<div class="photo-stop-sep" data-stop-id=""><span>Unassigned (drop here to remove from stop)</span></div>';
+      html += '<div class="photo-grid" data-stop-id="" style="min-height:40px;border:1px dashed var(--border);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;color:var(--text-dim);font-size:12px"><span style="padding:8px">Drag photos here to unassign</span></div>';
+    }
   }
 
   // Hidden GPX file input
@@ -4380,7 +4425,8 @@ function wireDetailEvents() {
     dz.addEventListener('drop', (e) => {
       e.preventDefault();
       dz.classList.remove('dragover');
-      uploadPhotos(e.dataTransfer.files);
+      // Ignore internal photo drag-and-drop (only handle file uploads)
+      if (e.dataTransfer.files.length > 0) uploadPhotos(e.dataTransfer.files);
     });
     fi.addEventListener('change', () => {
       uploadPhotos(fi.files);
@@ -4420,6 +4466,154 @@ function wireDetailEvents() {
         openPhotoModal(photoId);
       }
     });
+  });
+
+  // --- Drag & drop: photo thumbnails to stops, reorder within groups ---
+  if (!state.readOnly) wirePhotoDragDrop();
+}
+
+function wirePhotoDragDrop() {
+  let dragPhotoId = null;
+
+  // Make photo thumbs draggable
+  $$('.photo-thumb[draggable="true"]').forEach(thumb => {
+    thumb.addEventListener('dragstart', (e) => {
+      dragPhotoId = thumb.dataset.photoId;
+      e.dataTransfer.setData('text/plain', dragPhotoId);
+      e.dataTransfer.effectAllowed = 'move';
+      requestAnimationFrame(() => thumb.classList.add('dragging'));
+    });
+    thumb.addEventListener('dragend', () => {
+      thumb.classList.remove('dragging');
+      clearAllDropHighlights();
+      dragPhotoId = null;
+    });
+  });
+
+  // Stop items as drop targets (assign photo to stop)
+  $$('.stop-item[data-stop-id]').forEach(stopEl => {
+    stopEl.addEventListener('dragover', (e) => {
+      if (!dragPhotoId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      stopEl.classList.add('drop-target');
+    });
+    stopEl.addEventListener('dragleave', (e) => {
+      if (!stopEl.contains(e.relatedTarget)) stopEl.classList.remove('drop-target');
+    });
+    stopEl.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      stopEl.classList.remove('drop-target');
+      const photoId = e.dataTransfer.getData('text/plain');
+      if (!photoId) return;
+      const stopId = stopEl.dataset.stopId;
+      try {
+        await api('POST', '/api/photos/' + photoId + '/assign', { stop_id: stopId });
+        toast('Photo assigned to stop');
+        reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  // Photo grids as reorder drop targets
+  $$('.photo-grid[data-stop-id]').forEach(grid => {
+    grid.addEventListener('dragover', (e) => {
+      if (!dragPhotoId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      grid.classList.add('drop-target-grid');
+      // Highlight insertion position
+      const thumbs = [...grid.querySelectorAll('.photo-thumb')];
+      thumbs.forEach(t => { t.classList.remove('drag-over-before', 'drag-over-after'); });
+      const target = e.target.closest('.photo-thumb');
+      if (target && target.dataset.photoId !== dragPhotoId) {
+        const rect = target.getBoundingClientRect();
+        const mid = rect.left + rect.width / 2;
+        if (e.clientX < mid) {
+          target.classList.add('drag-over-before');
+        } else {
+          target.classList.add('drag-over-after');
+        }
+      }
+    });
+    grid.addEventListener('dragleave', (e) => {
+      if (!grid.contains(e.relatedTarget)) {
+        grid.classList.remove('drop-target-grid');
+        grid.querySelectorAll('.photo-thumb').forEach(t => {
+          t.classList.remove('drag-over-before', 'drag-over-after');
+        });
+      }
+    });
+    grid.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      grid.classList.remove('drop-target-grid');
+      const photoId = e.dataTransfer.getData('text/plain');
+      if (!photoId) return;
+      const stopId = grid.dataset.stopId || null;
+
+      // Build new order: existing photos in this grid, insert dragged photo at drop position
+      const thumbs = [...grid.querySelectorAll('.photo-thumb')];
+      let ids = thumbs.map(t => t.dataset.photoId).filter(id => id !== photoId);
+
+      // Find insertion index from the drop target
+      const target = e.target.closest('.photo-thumb');
+      if (target && target.dataset.photoId !== photoId) {
+        const rect = target.getBoundingClientRect();
+        const mid = rect.left + rect.width / 2;
+        const targetIdx = ids.indexOf(target.dataset.photoId);
+        if (targetIdx >= 0) {
+          const insertIdx = e.clientX < mid ? targetIdx : targetIdx + 1;
+          ids.splice(insertIdx, 0, photoId);
+        } else {
+          ids.push(photoId);
+        }
+      } else {
+        ids.push(photoId);
+      }
+
+      try {
+        await api('POST', '/api/photos/reorder', { photo_ids: ids, stop_id: stopId });
+        toast('Photos reordered');
+        reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  // Also allow dropping on "Unassigned" separator to unassign
+  $$('.photo-stop-sep[data-stop-id=""]').forEach(sep => {
+    sep.addEventListener('dragover', (e) => {
+      if (!dragPhotoId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      sep.classList.add('drop-target');
+    });
+    sep.addEventListener('dragleave', () => sep.classList.remove('drop-target'));
+    sep.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      sep.classList.remove('drop-target');
+      const photoId = e.dataTransfer.getData('text/plain');
+      if (!photoId) return;
+      try {
+        await api('POST', '/api/photos/' + photoId + '/assign', { stop_id: null });
+        toast('Photo unassigned');
+        reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    });
+  });
+}
+
+function clearAllDropHighlights() {
+  $$('.stop-item').forEach(el => el.classList.remove('drop-target'));
+  $$('.photo-grid').forEach(el => el.classList.remove('drop-target-grid'));
+  $$('.photo-stop-sep').forEach(el => el.classList.remove('drop-target'));
+  $$('.photo-thumb').forEach(el => {
+    el.classList.remove('drag-over-before', 'drag-over-after');
   });
 }
 
@@ -4851,6 +5045,7 @@ function getSortedPhotos() {
   const trip = state.currentTrip;
   if (!trip) return [];
   return (trip.photos || []).slice().sort((a, b) => {
+    if (a.photo_order !== b.photo_order) return a.photo_order - b.photo_order;
     const ta = a.taken_at || a.created_at || '';
     const tb = b.taken_at || b.created_at || '';
     return ta < tb ? -1 : ta > tb ? 1 : 0;
@@ -4884,6 +5079,12 @@ function showPhotoInModal(photo) {
     imgEl.style.display = '';
   }
   $('#photoModalCaption').value = photo.caption || '';
+  // Populate stop selector
+  const stopSel = $('#photoModalStop');
+  const stops = (state.currentTrip?.stops || []).slice().sort((a,b) => a.stop_order - b.stop_order);
+  stopSel.innerHTML = '<option value="">— No stop —</option>' + stops.map(s =>
+    '<option value="' + escapeHtml(s.id) + '"' + (photo.stop_id === s.id ? ' selected' : '') + '>' + escapeHtml(s.title || 'Untitled Stop') + '</option>'
+  ).join('');
   const hasLoc = photo.lat != null && photo.lng != null;
   $('#photoModalRescan').style.display = hasLoc ? 'none' : '';
   // Update nav button visibility
@@ -5002,16 +5203,30 @@ $('#photoModal').addEventListener('click', (e) => {
   }
 });
 
+// Stop selector change → assign photo to stop immediately
+$('#photoModalStop').addEventListener('change', async () => {
+  if (!state.selectedPhotoId) return;
+  const newStopId = $('#photoModalStop').value || null;
+  try {
+    await api('POST', '/api/photos/' + state.selectedPhotoId + '/assign', { stop_id: newStopId });
+    toast('Photo assigned');
+    reloadCurrentTrip();
+  } catch (err) {
+    toast(err.message, 'error');
+  }
+});
+
 $('#photoModalSave').addEventListener('click', async () => {
   if (!state.selectedPhotoId) return;
   const photo = (state.currentTrip.photos || []).find(p => p.id === state.selectedPhotoId);
   if (!photo) return;
+  const selStop = $('#photoModalStop').value || null;
   try {
     await api('PUT', '/api/photos/' + photo.id, {
       caption: $('#photoModalCaption').value,
       lat: photo.lat,
       lng: photo.lng,
-      stop_id: photo.stop_id,
+      stop_id: selStop,
       cam_heading: photo.cam_heading,
       cam_pitch: photo.cam_pitch,
       cam_range: photo.cam_range,
@@ -5869,6 +6084,7 @@ function renderTimeline() {
       return Math.sqrt(dx * dx + dy * dy) < 500;
     });
     const allPhotos = stopPhotos.concat(nearbyPhotos).sort((a, b) => {
+      if (a.photo_order !== b.photo_order) return a.photo_order - b.photo_order;
       const ta = a.taken_at || a.created_at || '';
       const tb = b.taken_at || b.created_at || '';
       return ta < tb ? -1 : ta > tb ? 1 : 0;
@@ -6272,6 +6488,7 @@ function buildPresentationSlides() {
       return Math.sqrt(dx * dx + dy * dy) < 500;
     });
     const allPhotos = stopPhotos.concat(nearbyPhotos).sort((a, b) => {
+      if (a.photo_order !== b.photo_order) return a.photo_order - b.photo_order;
       const ta = a.taken_at || a.created_at || '';
       const tb = b.taken_at || b.created_at || '';
       return ta < tb ? -1 : ta > tb ? 1 : 0;
