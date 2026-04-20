@@ -275,6 +275,7 @@ func (s *Server) Serve(addr string) error {
 	// Trip reset & auto-stops
 	mux.HandleFunc("POST /api/trips/{id}/reset", s.handleResetTrip)
 	mux.HandleFunc("POST /api/trips/{id}/auto-stops", s.handleAutoStops)
+	mux.HandleFunc("POST /api/trips/{id}/resort-photos", s.handleResortPhotos)
 
 	slog.Info("starting server", "addr", addr)
 	return http.ListenAndServe(addr, mux)

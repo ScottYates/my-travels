@@ -4236,7 +4236,12 @@ function renderTripDetail() {
   // ---- STOPS ----
   html += '<div class="section-header" id="stopsHeader" style="cursor:pointer">';
   html += '<h3><span class="section-toggle" id="stopsToggle">▼</span> 📌 Stops (' + stops.length + ')</h3>';
-  html += '<button class="btn btn-orange btn-sm edit-only" id="addStopBtn" onclick="event.stopPropagation()">+ Add Stop</button>';
+  html += '<div class="edit-only" style="display:flex;gap:6px" onclick="event.stopPropagation()">';
+  if (stops.length > 0 && photos.length > 0) {
+    html += '<button class="btn btn-sm edit-only" id="resortPhotosBtn" style="background:var(--navy-lighter);color:var(--text);border:1px solid var(--border)" title="Re-sort all photos into stops by location and time">🔀 Re-sort</button>';
+  }
+  html += '<button class="btn btn-orange btn-sm edit-only" id="addStopBtn">+ Add Stop</button>';
+  html += '</div>';
   html += '</div>';
   html += '<div id="stopsBody">';
 
@@ -4432,6 +4437,37 @@ function wireDetailEvents() {
       state.addStopMode = true;
       $('#stopIndicator').classList.add('active');
       viewer.canvas.style.cursor = 'crosshair';
+    });
+  }
+
+  // Re-sort photos into stops
+  const resortBtn = $('#resortPhotosBtn');
+  if (resortBtn) {
+    resortBtn.addEventListener('click', async () => {
+      const trip = state.currentTrip;
+      if (!trip) return;
+      const stops = (trip.stops || []);
+      const photos = (trip.photos || []);
+      const unassigned = photos.filter(p => !p.stop_id).length;
+      const msg = 'Re-sort all ' + photos.length + ' photos into ' + stops.length + ' stops based on location and time?\n\n' +
+        'Currently ' + unassigned + ' photo' + (unassigned !== 1 ? 's are' : ' is') + ' unassigned.\n\n' +
+        'This will reassign ALL photos (including ones already in stops).';
+      if (!confirm(msg)) return;
+      resortBtn.disabled = true;
+      resortBtn.textContent = '⏳ Sorting...';
+      try {
+        const updated = await api('POST', '/api/trips/' + trip.id + '/resort-photos');
+        state.currentTrip = updated;
+        renderTripDetail();
+        renderMapData();
+        renderTimeline();
+        const newUnassigned = (updated.photos || []).filter(p => !p.stop_id).length;
+        const assigned = photos.length - newUnassigned;
+        toast('Re-sorted: ' + assigned + ' photos assigned to stops, ' + newUnassigned + ' unassigned');
+      } catch (err) {
+        toast('Failed to re-sort photos: ' + err.message, 'error');
+        await reloadCurrentTrip();
+      }
     });
   }
 
