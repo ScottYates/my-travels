@@ -5685,27 +5685,141 @@ $('#cancelDraw').addEventListener('click', () => {
 // ---------------------------------------------------------------
 var _photoLoadGeneration = 0; // cancellation token for async photo thumbnail loading
 
-// Constrained flyTo that keeps the destination visible during the flight arc.
-// Cesium's default arc goes to near-space for long flights, losing the target.
-// We cap maximumHeight so the arc stays low enough to keep the destination in frame.
+// Custom fly-to: zoom out from current, rotate globe to face destination, zoom in.
+// Three phases: (1) pull back, (2) rotate/pan, (3) dive in.
+// If destination is already in view, skip phases 1-2 and just zoom in.
+var _flyAnimId = 0;
 function constrainedFlyTo(cam, dest, opts) {
-  const dist = Cesium.Cartesian3.distance(cam.positionWC, dest);
-  // Get the destination height above the ellipsoid
-  var carto = Cesium.Cartographic.fromCartesian(dest);
-  var destHeight = carto ? carto.height : 0;
-  // maxHeight: for short hops stay very low; for long flights cap reasonably
-  // Use 1.5x the destination height or a distance-based value, whichever is larger
-  var maxHeight = Math.max(destHeight * 1.8, Math.min(dist * 0.4, 3000000));
-  // But never less than the destination height + some margin
-  maxHeight = Math.max(maxHeight, destHeight + 5000);
-  var defaults = {
-    destination: dest,
-    duration: Math.max(0.8, Math.min(3.0, dist / 5000)),
-    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
-    maximumHeight: maxHeight,
-    pitchAdjustHeight: maxHeight * 0.5,
-  };
-  cam.flyTo(Object.assign(defaults, opts));
+  opts = opts || {};
+  var id = ++_flyAnimId;
+  // Determine which scene to requestRender on
+  var scene;
+  if (typeof presGlobeViewer !== 'undefined' && presGlobeViewer && cam === presGlobeViewer.camera) {
+    scene = presGlobeViewer.scene;
+  } else {
+    scene = viewer.scene;
+  }
+
+  // Extract destination lat/lng/height
+  var destCarto = Cesium.Cartographic.fromCartesian(dest);
+  var destLat = Cesium.Math.toDegrees(destCarto.latitude);
+  var destLng = Cesium.Math.toDegrees(destCarto.longitude);
+  var destHeight = destCarto.height;
+
+  // Current camera position in geographic coords
+  var curCarto = cam.positionCartographic;
+  var curLat = Cesium.Math.toDegrees(curCarto.latitude);
+  var curLng = Cesium.Math.toDegrees(curCarto.longitude);
+  var curHeight = curCarto.height;
+
+  // Target orientation
+  var targetHeading = (opts.orientation && opts.orientation.heading != null) ? opts.orientation.heading : 0;
+  var targetPitch = (opts.orientation && opts.orientation.pitch != null) ? opts.orientation.pitch : Cesium.Math.toRadians(-45);
+
+  // Angular distance on the globe surface (great-circle)
+  var dLat = Cesium.Math.toRadians(destLat - curLat);
+  var dLng = Cesium.Math.toRadians(destLng - curLng);
+  var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+          Math.cos(Cesium.Math.toRadians(curLat))*Math.cos(Cesium.Math.toRadians(destLat))*
+          Math.sin(dLng/2)*Math.sin(dLng/2);
+  var angularDist = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); // radians
+  var surfaceDistKm = angularDist * 6371;
+
+  // Compute pull-back height: enough to see both points
+  // For short hops (<5km), barely rise. For 1000km+, go higher.
+  var pullBackHeight = Math.max(destHeight * 2, Math.min(surfaceDistKm * 800, 6000000));
+  pullBackHeight = Math.max(pullBackHeight, curHeight, destHeight + 5000);
+
+  // If very close (< 2km surface), just use Cesium's native flyTo
+  if (surfaceDistKm < 2) {
+    cam.flyTo({
+      destination: dest,
+      orientation: opts.orientation || { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
+      duration: opts.duration || 0.8,
+      easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+      complete: opts.complete,
+    });
+    return;
+  }
+
+  // Total duration: adaptive based on distance
+  var totalDuration = opts.duration || Math.max(1.2, Math.min(3.5, 1.2 + surfaceDistKm / 2000));
+
+  // Phase splits: pull-back 25%, rotate 35%, zoom-in 40%
+  var t1 = 0.25, t2 = 0.60; // phase boundaries as fraction of total
+
+  // Midpoint for the rotate phase: look-down at halfway between start and dest
+  var midLat = (curLat + destLat) / 2;
+  // Shortest longitude path
+  var lngDiff = destLng - curLng;
+  if (lngDiff > 180) lngDiff -= 360;
+  if (lngDiff < -180) lngDiff += 360;
+  var midLng = curLng + lngDiff / 2;
+
+  // Easing: smooth cubic in-out
+  function ease(t) {
+    return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
+  }
+
+  var startTime = null;
+  var startHeading = cam.heading;
+  var startPitch = cam.pitch;
+
+  function animate(timestamp) {
+    if (id !== _flyAnimId) return; // cancelled
+    if (!startTime) startTime = timestamp;
+    var elapsed = (timestamp - startTime) / 1000;
+    var t = Math.min(elapsed / totalDuration, 1);
+    var et = ease(t);
+
+    var lat, lng, height, heading, pitch;
+
+    if (t <= t1) {
+      // Phase 1: Pull back from current position, start turning toward mid
+      var p = et / ease(t1); // progress within phase 1
+      lat = curLat + (midLat - curLat) * p * 0.3;
+      lng = curLng + lngDiff * 0.5 * p * 0.3;
+      height = curHeight + (pullBackHeight - curHeight) * p;
+      heading = startHeading + (targetHeading - startHeading) * p * 0.3;
+      pitch = startPitch + (Cesium.Math.toRadians(-90) - startPitch) * p;
+    } else if (t <= t2) {
+      // Phase 2: Rotate/pan — camera at pull-back height, sweeping toward destination
+      var p = (et - ease(t1)) / (ease(t2) - ease(t1));
+      lat = curLat + (midLat - curLat) * 0.3 + (destLat - (curLat + (midLat - curLat) * 0.3)) * p;
+      lng = curLng + lngDiff * 0.5 * 0.3 + (lngDiff - lngDiff * 0.5 * 0.3) * p;
+      height = pullBackHeight;
+      heading = startHeading + (targetHeading - startHeading) * (0.3 + 0.7 * p);
+      pitch = Cesium.Math.toRadians(-90) + (targetPitch - Cesium.Math.toRadians(-90)) * p * 0.2;
+    } else {
+      // Phase 3: Zoom in to destination
+      var p = (et - ease(t2)) / (1 - ease(t2));
+      lat = destLat;
+      lng = destLng;
+      height = pullBackHeight + (destHeight - pullBackHeight) * p;
+      heading = targetHeading;
+      pitch = Cesium.Math.toRadians(-90) + (targetPitch - Cesium.Math.toRadians(-90)) * (0.2 + 0.8 * p);
+    }
+
+    cam.setView({
+      destination: Cesium.Cartesian3.fromDegrees(lng, lat, height),
+      orientation: { heading: heading, pitch: pitch, roll: 0 },
+    });
+    scene.requestRender();
+
+    if (t < 1) {
+      requestAnimationFrame(animate);
+    } else {
+      // Snap to exact final position
+      cam.setView({
+        destination: dest,
+        orientation: opts.orientation || { heading: targetHeading, pitch: targetPitch, roll: 0 },
+      });
+      scene.requestRender();
+      if (opts.complete) opts.complete();
+    }
+  }
+
+  requestAnimationFrame(animate);
 }
 
 // Fly to a stop, using saved camera view if available, otherwise default offset view
