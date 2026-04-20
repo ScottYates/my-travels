@@ -1763,14 +1763,17 @@ body.no-auth .readonly-badge { display: none !important; }
   text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
 }
 .pres-exit-btn {
-  background: rgba(255,255,255,0.15);
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 100001;
+  background: rgba(0,0,0,0.5);
   border: 1px solid rgba(255,255,255,0.3);
   color: #fff;
   padding: 6px 16px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
-  flex-shrink: 0;
   transition: background 0.2s;
 }
 .pres-exit-btn:hover {
@@ -1856,21 +1859,25 @@ body.no-auth .readonly-badge { display: none !important; }
   background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
   z-index: 10;
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  opacity: 0;
-  transition: opacity 0.3s;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
   pointer-events: none;
 }
-#presentationOverlay:hover .pres-bottom,
-#presentationOverlay.show-controls .pres-bottom {
+.pres-nav {
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+#presentationOverlay:hover .pres-nav,
+#presentationOverlay.show-controls .pres-nav {
   opacity: 1;
 }
 .pres-caption {
   color: #fff;
   font-size: 16px;
   line-height: 1.4;
-  max-width: 70%;
+  width: 100%;
+  text-align: center;
   text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
 }
 .pres-caption .pres-cap-text {
@@ -2270,12 +2277,12 @@ body.no-auth .readonly-badge { display: none !important; }
 
 <!-- Presentation Mode Overlay -->
 <div id="presentationOverlay">
+  <button class="pres-exit-btn" id="presExit">✕ Close</button>
   <div class="pres-topbar">
     <div style="display:flex;align-items:center;overflow:hidden">
       <span class="pres-title" id="presTitle"></span>
       <span class="pres-counter" id="presCounter"></span>
     </div>
-    <button class="pres-exit-btn" id="presExit">✕ Exit</button>
   </div>
   <div class="pres-content" id="presContent"></div>
   <!-- Persistent mini globe -->
