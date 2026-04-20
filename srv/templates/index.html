@@ -6569,17 +6569,47 @@ function renderMapData() {
       img.crossOrigin = 'anonymous';
       img.onload = function() {
         if (_photoLoadGeneration !== gen) { resolve(); return; }
-        ctx.save();
-        ctx.beginPath(); ctx.arc(32, 32, 28, 0, Math.PI * 2); ctx.clip();
         const s = Math.min(img.width, img.height);
         const sx = (img.width - s) / 2;
         const sy = (img.height - s) / 2;
+
+        // Normal marker (64x64 canvas, white border)
+        ctx.save();
+        ctx.beginPath(); ctx.arc(32, 32, 28, 0, Math.PI * 2); ctx.clip();
         ctx.drawImage(img, sx, sy, s, s, 4, 4, 56, 56);
         ctx.restore();
         ctx.beginPath(); ctx.arc(32, 32, 29, 0, Math.PI * 2);
         ctx.lineWidth = 3; ctx.strokeStyle = 'white'; ctx.stroke();
+        const normalDataUrl = canvas.toDataURL();
+
+        // Highlighted marker (128x128 canvas, bright orange/yellow ring + strong glow)
+        const hCanvas = document.createElement('canvas');
+        hCanvas.width = 128; hCanvas.height = 128;
+        const hCtx = hCanvas.getContext('2d');
+        // Outer glow (multiple passes for vivid effect)
+        hCtx.shadowColor = '#f59e0b';
+        hCtx.shadowBlur = 24;
+        hCtx.beginPath(); hCtx.arc(64, 64, 50, 0, Math.PI * 2);
+        hCtx.fillStyle = 'rgba(245,158,11,0.35)'; hCtx.fill();
+        hCtx.fill(); // double pass
+        hCtx.shadowBlur = 0;
+        // Photo circle
+        hCtx.save();
+        hCtx.beginPath(); hCtx.arc(64, 64, 40, 0, Math.PI * 2); hCtx.clip();
+        hCtx.drawImage(img, sx, sy, s, s, 24, 24, 80, 80);
+        hCtx.restore();
+        // Thick bright orange ring
+        hCtx.beginPath(); hCtx.arc(64, 64, 44, 0, Math.PI * 2);
+        hCtx.lineWidth = 6; hCtx.strokeStyle = '#f59e0b'; hCtx.stroke();
+        // White inner accent
+        hCtx.beginPath(); hCtx.arc(64, 64, 40, 0, Math.PI * 2);
+        hCtx.lineWidth = 2; hCtx.strokeStyle = 'white'; hCtx.stroke();
+        const highlightDataUrl = hCanvas.toDataURL();
+
+        entity._normalImage = normalDataUrl;
+        entity._highlightImage = highlightDataUrl;
         entity.billboard = new Cesium.BillboardGraphics({
-          image: canvas.toDataURL(),
+          image: normalDataUrl,
           width: 44,
           height: 44,
           verticalOrigin: Cesium.VerticalOrigin.CENTER,
@@ -6671,27 +6701,40 @@ function fitMapToTrip() {
   });
 }
 
-// Highlight a photo marker on the globe (pulse effect)
+// Highlight a photo marker on the globe (swap to highlighted image + enlarge)
 function highlightPhotoMarker(photoId) {
-  // Reset all photo markers to normal size
+  // Reset all photo markers to normal image, size, and depth
   state.photoMarkers.forEach(m => {
     if (m.billboard) {
+      if (m._normalImage) m.billboard.image = m._normalImage;
       m.billboard.width = 44;
       m.billboard.height = 44;
+      m.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, 0);
+      m.billboard.scale = 1.0;
     }
     if (m.point) {
       m.point.pixelSize = 14;
+      m.point.outlineWidth = 3;
+      m.point.color = Cesium.Color.WHITE;
+      m.point.outlineColor = Cesium.Color.fromCssColorString('#3b82f6');
     }
   });
-  // Find and enlarge the target marker
+  // Find and highlight the target marker
   const target = state.photoMarkers.find(m => m._photoData && m._photoData.id === photoId);
   if (target) {
-    if (target.billboard && target.billboard.image) {
-      target.billboard.width = 64;
-      target.billboard.height = 64;
+    if (target.billboard) {
+      if (target._highlightImage) target.billboard.image = target._highlightImage;
+      target.billboard.width = 80;
+      target.billboard.height = 80;
+      // Pull toward camera so it renders on top of overlapping markers
+      target.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, -50);
+      target.billboard.scale = 1.0;
     }
     if (target.point) {
-      target.point.pixelSize = 20;
+      target.point.pixelSize = 24;
+      target.point.outlineWidth = 6;
+      target.point.color = Cesium.Color.fromCssColorString('#f59e0b');
+      target.point.outlineColor = Cesium.Color.WHITE;
     }
     viewer.scene.requestRender();
   }
