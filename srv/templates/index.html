@@ -5181,8 +5181,10 @@ document.addEventListener('keydown', (e) => {
       $('#fullresImg').style.display = '';
     }
   }
-  // Arrow keys navigate photos when modal is open
+  // Arrow keys navigate photos when modal is open (but not when typing in inputs)
   if ($('#photoModal').classList.contains('active') && !$('#fullresOverlay').classList.contains('active')) {
+    var tag = document.activeElement && document.activeElement.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); navigatePhoto(1); }
     if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); navigatePhoto(-1); }
   }
