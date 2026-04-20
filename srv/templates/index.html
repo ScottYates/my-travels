@@ -1507,7 +1507,58 @@ textarea.form-input {
 
 body.readonly .readonly-badge { display: inline-flex; }
 body.readonly .edit-only { display: none !important; }
-body.readonly .edit-only-input { pointer-events: none; opacity: 0.6; }
+body.readonly .edit-only-input { display: none !important; }
+body.readonly .photo-modal-info { justify-content: center; }
+
+/* Read-only caption overlay in photo modal */
+.photo-modal-ro-caption {
+  display: none;
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.4;
+  text-align: center;
+  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+  padding: 8px 16px;
+  max-width: 80vw;
+}
+body.readonly .photo-modal-ro-caption { display: block; }
+body.readonly .photo-modal-ro-caption:empty { display: none; }
+.photo-modal-ro-caption .ro-cap-text {
+  font-weight: 500;
+}
+.photo-modal-ro-caption .ro-cap-date {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.7);
+  margin-top: 2px;
+}
+.photo-modal-ro-caption .ro-cap-stop {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.5);
+  margin-top: 2px;
+}
+
+/* Read-only close button in photo modal */
+.photo-modal-ro-close {
+  display: none;
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 320;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  border: none;
+  font-size: 22px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.photo-modal-ro-close:hover { background: rgba(255,255,255,0.2); }
+body.readonly .photo-modal-ro-close { display: flex; align-items: center; justify-content: center; }
+body.readonly .photo-modal-info { display: none !important; }
 body.no-auth .edit-only { display: none !important; }
 body.no-auth .edit-only-input { pointer-events: none; opacity: 0.6; }
 body.no-auth .readonly-badge { display: none !important; }
@@ -2098,10 +2149,12 @@ body.no-auth .readonly-badge { display: none !important; }
 
 <!-- Photo lightbox modal -->
 <div class="photo-modal-overlay" id="photoModal">
+  <button class="photo-modal-ro-close" id="photoModalRoClose">✕</button>
   <button class="photo-nav photo-nav-prev" id="photoNavPrev">‹</button>
   <button class="photo-nav photo-nav-next" id="photoNavNext">›</button>
   <img id="photoModalImg" src="" alt="">
   <video id="photoModalVideo" controls playsinline style="display:none"></video>
+  <div class="photo-modal-ro-caption" id="photoModalRoCaption"></div>
   <div class="photo-modal-info">
     <input type="text" id="photoModalCaption" placeholder="Add a caption..." class="edit-only-input">
     <select id="photoModalStop" class="photo-modal-stop-select edit-only"><option value="">No stop</option></select>
@@ -5689,6 +5742,20 @@ function showPhotoInModal(photo) {
   $('#photoModalCaption').value = photo.caption || '';
   $('#photoModalCaption').readOnly = state.readOnly;
   if (state.readOnly) $('#photoModalCaption').placeholder = '';
+  // Populate read-only caption overlay
+  if (state.readOnly) {
+    let roHtml = '';
+    if (photo.caption) roHtml += '<div class="ro-cap-text">' + escapeHtml(photo.caption) + '</div>';
+    if (photo.taken_at) {
+      const d = new Date(photo.taken_at);
+      if (!isNaN(d)) roHtml += '<div class="ro-cap-date">' + d.toLocaleDateString(undefined, {year:'numeric',month:'long',day:'numeric'}) + '</div>';
+    }
+    if (photo.stop_id) {
+      const stop = (state.currentTrip?.stops || []).find(s => s.id === photo.stop_id);
+      if (stop) roHtml += '<div class="ro-cap-stop">' + escapeHtml(stop.title || '') + '</div>';
+    }
+    $('#photoModalRoCaption').innerHTML = roHtml;
+  }
   // Populate stop selector
   const stopSel = $('#photoModalStop');
   const stops = (state.currentTrip?.stops || []).slice().sort((a,b) => a.stop_order - b.stop_order);
@@ -5796,7 +5863,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-$('#photoModalClose').addEventListener('click', () => {
+function closePhotoModal() {
   $('#photoModal').classList.remove('active');
   // Stop video playback when closing modal
   var mv = $('#photoModalVideo');
@@ -5804,7 +5871,9 @@ $('#photoModalClose').addEventListener('click', () => {
   state.selectedPhotoId = null;
   state.focusedPhotoId = null;
   $('#camToolbar').classList.remove('active');
-});
+}
+$('#photoModalClose').addEventListener('click', closePhotoModal);
+$('#photoModalRoClose').addEventListener('click', closePhotoModal);
 
 $('#photoModal').addEventListener('click', (e) => {
   if (e.target === $('#photoModal')) {
