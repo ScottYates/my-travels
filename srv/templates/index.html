@@ -50,7 +50,8 @@ body {
 
 .sidebar {
   width: var(--sidebar-w);
-  min-width: var(--sidebar-w);
+  min-width: 320px;
+  max-width: 80vw;
   height: 100vh;
   background: var(--navy);
   display: flex;
@@ -58,6 +59,17 @@ body {
   z-index: 10;
   border-right: 1px solid var(--border);
   transition: transform 0.3s ease;
+  position: relative;
+}
+
+/* Sidebar resize handle */
+.sidebar-resize {
+  position: absolute; top: 0; right: -4px; width: 8px; height: 100%;
+  cursor: col-resize; z-index: 20;
+  background: transparent; transition: background 0.15s;
+}
+.sidebar-resize:hover, .sidebar-resize.active {
+  background: var(--accent);
 }
 
 .map-container {
@@ -528,10 +540,14 @@ textarea.form-input {
   font-size: 10px; color: var(--text-dim); font-weight: 400;
   text-transform: none; letter-spacing: 0;
 }
-/* Split-stop button between photos */
+/* Split-stop buttons between photo rows (inside grid) */
 .photo-split-stop {
-  display: flex; align-items: center; justify-content: center;
-  grid-column: 1 / -1; padding: 2px 0; opacity: 0; transition: opacity 0.2s;
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0; margin: -2px 0; opacity: 0; transition: opacity 0.2s;
+}
+.photo-split-stop::before, .photo-split-stop::after {
+  content: ''; flex: 1; height: 1px; background: var(--border); opacity: 0.5;
 }
 .photo-split-stop:hover { opacity: 1; }
 .photo-split-stop button {
@@ -578,7 +594,7 @@ textarea.form-input {
 /* Photo grid */
 .photo-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 8px;
 }
 
@@ -1647,12 +1663,13 @@ body.no-auth .readonly-badge { display: none !important; }
   }
 
   .mobile-toggle { display: block; }
+  .sidebar-resize { display: none; }
 
   .map-container { width: 100%; height: 100vh; }
 
   .map-toolbar { right: 12px; }
 
-  .photo-grid { grid-template-columns: repeat(3, 1fr); }
+  .photo-grid { grid-template-columns: repeat(auto-fill, minmax(90px, 1fr)); }
 }
 
 /* Custom map markers */
@@ -2152,6 +2169,7 @@ body.no-auth .readonly-badge { display: none !important; }
 <div class="app">
   <!-- Sidebar -->
   <aside class="sidebar" id="sidebar">
+    <div class="sidebar-resize" id="sidebarResize"></div>
     <div class="sidebar-header">
       <h1><span>🌍</span> My Travels</h1>
       <div class="header-actions">
@@ -2354,6 +2372,51 @@ const timelineContent = $('#timelineContent');
 const shareBar = $('#shareBar');
 const shareUrl = $('#shareUrl');
 const toastContainer = $('#toastContainer');
+
+// Sidebar resize
+(function initSidebarResize() {
+  const handle = $('#sidebarResize');
+  if (!handle) return;
+  let startX, startW, dragging = false;
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startW = sidebar.offsetWidth;
+    handle.classList.add('active');
+    sidebar.style.transition = 'none';
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const newW = Math.max(320, Math.min(window.innerWidth * 0.8, startW + (e.clientX - startX)));
+    sidebar.style.width = newW + 'px';
+    sidebar.style.minWidth = newW + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('active');
+    sidebar.style.transition = '';
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    // Persist width and refresh split buttons for new column count
+    try { localStorage.setItem('sidebar-width', sidebar.offsetWidth); } catch(e) {}
+    if (typeof window._refreshSplitButtons === 'function') window._refreshSplitButtons();
+  });
+  // Restore saved width
+  try {
+    const saved = localStorage.getItem('sidebar-width');
+    if (saved) {
+      const w = parseInt(saved);
+      if (w >= 320 && w <= window.innerWidth * 0.8) {
+        sidebar.style.width = w + 'px';
+        sidebar.style.minWidth = w + 'px';
+      }
+    }
+  } catch(e) {}
+})();
 
 $('#shareBarToggle').addEventListener('click', () => shareBar.classList.toggle('open'));
 
@@ -4426,10 +4489,6 @@ function renderTripDetail() {
       }
       html += '<div class="photo-grid' + (state.photoViewMode === 'list' ? ' list-view' : '') + '" data-stop-id="' + gStopId + '">';
       g.photos.forEach((photo, pi) => {
-        // Split-stop button between photos (edit mode, only within an assigned stop with 2+ photos)
-        if (isEdit && g.stop && pi > 0 && g.photos.length > 1) {
-          html += '<div class="photo-split-stop edit-only" data-stop-id="' + gStopId + '" data-split-after="' + (pi - 1) + '"><button class="split-stop-btn">+ Insert Stop</button></div>';
-        }
         const hasLocation = photo.lat != null && photo.lng != null;
         html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '"' + (isEdit ? ' draggable="true"' : '') + '>';
         html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy" draggable="false">';
@@ -4832,25 +4891,55 @@ function wireDetailEvents() {
     });
   });
 
-  // Split-stop buttons between photos
-  $$('.split-stop-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
+  // Row-based split-stop buttons: inject into grids at row boundaries
+  function refreshSplitButtons() {
+    // Remove existing split buttons
+    $$('.photo-split-stop').forEach(el => el.remove());
+    if (state.readOnly) return;
+    $$('.photo-grid[data-stop-id]').forEach(grid => {
+      const stopId = grid.dataset.stopId;
+      if (!stopId) return;
+      const thumbs = Array.from(grid.querySelectorAll('.photo-thumb'));
+      if (thumbs.length < 2) return;
+      const cols = getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+      const totalRows = Math.ceil(thumbs.length / cols);
+      if (totalRows < 2) return;
+      for (let row = totalRows - 1; row >= 1; row--) {
+        const insertBeforeIdx = row * cols;
+        if (insertBeforeIdx >= thumbs.length) continue;
+        const splitAfterIdx = insertBeforeIdx - 1;
+        const div = document.createElement('div');
+        div.className = 'photo-split-stop edit-only';
+        div.dataset.stopId = stopId;
+        div.dataset.splitAfter = String(splitAfterIdx);
+        const btn = document.createElement('button');
+        btn.className = 'split-stop-btn';
+        btn.textContent = '+ Insert Stop';
+        div.appendChild(btn);
+        grid.insertBefore(div, thumbs[insertBeforeIdx]);
+      }
+    });
+  }
+  refreshSplitButtons();
+  // Re-layout split buttons on sidebar resize
+  window._refreshSplitButtons = refreshSplitButtons;
+
+  // Split-stop button click handler (event delegation on grids)
+  $$('.photo-grid[data-stop-id]').forEach(grid => {
+    grid.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.split-stop-btn');
+      if (!btn) return;
       const wrapper = btn.closest('.photo-split-stop');
       const stopId = wrapper.dataset.stopId;
       const splitAfter = parseInt(wrapper.dataset.splitAfter);
       const stop = (trip.stops || []).find(s => s.id === stopId);
       if (!stop) return;
-      // Get photos in this stop's grid
-      const grid = wrapper.closest('.photo-grid') || wrapper.nextElementSibling;
-      // Collect photo IDs from this group
       const groupPhotos = trip.photos
         .filter(p => p.stop_id === stopId)
         .sort((a,b) => (a.photo_order||0) - (b.photo_order||0) || new Date(a.taken_at||0) - new Date(b.taken_at||0));
-      // Photos after the split point go to the new stop
       const movePhotos = groupPhotos.slice(splitAfter + 1);
       if (movePhotos.length === 0) return;
       const insertOrder = stop.stop_order + 1;
-      // Use the first moved photo's location if available, else the original stop's
       const firstMoved = movePhotos.find(p => p.lat != null && p.lng != null);
       const lat = firstMoved ? firstMoved.lat : stop.lat;
       const lng = firstMoved ? firstMoved.lng : stop.lng;
