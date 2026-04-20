@@ -865,6 +865,7 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 		Elevation   float64    `json:"elevation"`
 		ArrivedAt   *time.Time `json:"arrived_at"`
 		StopOrder   *int64     `json:"stop_order"`
+		PhotoIDs    []string   `json:"photo_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid JSON body", http.StatusBadRequest)
@@ -926,6 +927,20 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		jsonError(w, "failed to create stop", http.StatusInternalServerError)
 		return
+	}
+
+	// Optionally assign photos to the new stop
+	if len(body.PhotoIDs) > 0 {
+		for i, pid := range body.PhotoIDs {
+			if err := q.SetPhotoStopAndOrder(r.Context(), dbgen.SetPhotoStopAndOrderParams{
+				StopID:     &id,
+				PhotoOrder: int64(i),
+				ID:         pid,
+			}); err != nil {
+				jsonError(w, "failed to assign photo "+pid, http.StatusInternalServerError)
+				return
+			}
+		}
 	}
 
 	stop, err := q.GetStop(r.Context(), id)

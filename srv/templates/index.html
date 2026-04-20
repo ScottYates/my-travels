@@ -508,7 +508,7 @@ textarea.form-input {
 .photo-stop-sep {
   display: flex; align-items: center; gap: 8px;
   margin: 12px 0 6px; font-size: 12px; color: var(--orange);
-  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  font-weight: 600; letter-spacing: 0.5px;
 }
 .photo-stop-sep::before, .photo-stop-sep::after {
   content: ''; flex: 1; height: 1px; background: var(--border);
@@ -527,6 +527,20 @@ textarea.form-input {
 .photo-stop-sep .stop-location-name {
   font-size: 10px; color: var(--text-dim); font-weight: 400;
   text-transform: none; letter-spacing: 0;
+}
+/* Split-stop button between photos */
+.photo-split-stop {
+  display: flex; align-items: center; justify-content: center;
+  grid-column: 1 / -1; padding: 2px 0; opacity: 0; transition: opacity 0.2s;
+}
+.photo-split-stop:hover { opacity: 1; }
+.photo-split-stop button {
+  font-size: 10px; padding: 1px 8px; border: 1px dashed var(--border);
+  background: transparent; color: var(--text-dim); border-radius: 10px;
+  cursor: pointer; white-space: nowrap; transition: all 0.15s;
+}
+.photo-split-stop button:hover {
+  border-color: var(--accent); color: var(--accent); background: rgba(255,165,0,0.08);
 }
 /* Inline add-stop button between photo groups */
 .inline-add-stop {
@@ -4411,7 +4425,11 @@ function renderTripDetail() {
         html += '<div class="photo-stop-sep" data-stop-id=""><span>Unassigned</span></div>';
       }
       html += '<div class="photo-grid' + (state.photoViewMode === 'list' ? ' list-view' : '') + '" data-stop-id="' + gStopId + '">';
-      g.photos.forEach(photo => {
+      g.photos.forEach((photo, pi) => {
+        // Split-stop button between photos (edit mode, only within an assigned stop with 2+ photos)
+        if (isEdit && g.stop && pi > 0 && g.photos.length > 1) {
+          html += '<div class="photo-split-stop edit-only" data-stop-id="' + gStopId + '" data-split-after="' + (pi - 1) + '"><button class="split-stop-btn">+ Insert Stop</button></div>';
+        }
         const hasLocation = photo.lat != null && photo.lng != null;
         html += '<div class="photo-thumb" data-photo-id="' + escapeHtml(photo.id) + '"' + (isEdit ? ' draggable="true"' : '') + '>';
         html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy" draggable="false">';
@@ -4806,6 +4824,45 @@ function wireDetailEvents() {
           stop_order: insertOrder,
         });
         toast('Stop added');
+        await reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+        await reloadCurrentTrip();
+      }
+    });
+  });
+
+  // Split-stop buttons between photos
+  $$('.split-stop-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const wrapper = btn.closest('.photo-split-stop');
+      const stopId = wrapper.dataset.stopId;
+      const splitAfter = parseInt(wrapper.dataset.splitAfter);
+      const stop = (trip.stops || []).find(s => s.id === stopId);
+      if (!stop) return;
+      // Get photos in this stop's grid
+      const grid = wrapper.closest('.photo-grid') || wrapper.nextElementSibling;
+      // Collect photo IDs from this group
+      const groupPhotos = trip.photos
+        .filter(p => p.stop_id === stopId)
+        .sort((a,b) => (a.photo_order||0) - (b.photo_order||0) || new Date(a.taken_at||0) - new Date(b.taken_at||0));
+      // Photos after the split point go to the new stop
+      const movePhotos = groupPhotos.slice(splitAfter + 1);
+      if (movePhotos.length === 0) return;
+      const insertOrder = stop.stop_order + 1;
+      // Use the first moved photo's location if available, else the original stop's
+      const firstMoved = movePhotos.find(p => p.lat != null && p.lng != null);
+      const lat = firstMoved ? firstMoved.lat : stop.lat;
+      const lng = firstMoved ? firstMoved.lng : stop.lng;
+      try {
+        btn.disabled = true;
+        btn.textContent = '...';
+        await api('POST', '/api/trips/' + trip.id + '/stops', {
+          title: 'New Stop', lat: lat, lng: lng, elevation: 0,
+          stop_order: insertOrder,
+          photo_ids: movePhotos.map(p => p.id),
+        });
+        toast('Stop inserted');
         await reloadCurrentTrip();
       } catch (err) {
         toast(err.message, 'error');
