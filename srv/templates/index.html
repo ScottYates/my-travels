@@ -5685,6 +5685,29 @@ $('#cancelDraw').addEventListener('click', () => {
 // ---------------------------------------------------------------
 var _photoLoadGeneration = 0; // cancellation token for async photo thumbnail loading
 
+// Constrained flyTo that keeps the destination visible during the flight arc.
+// Cesium's default arc goes to near-space for long flights, losing the target.
+// We cap maximumHeight so the arc stays low enough to keep the destination in frame.
+function constrainedFlyTo(cam, dest, opts) {
+  const dist = Cesium.Cartesian3.distance(cam.positionWC, dest);
+  // Get the destination height above the ellipsoid
+  var carto = Cesium.Cartographic.fromCartesian(dest);
+  var destHeight = carto ? carto.height : 0;
+  // maxHeight: for short hops stay very low; for long flights cap reasonably
+  // Use 1.5x the destination height or a distance-based value, whichever is larger
+  var maxHeight = Math.max(destHeight * 1.8, Math.min(dist * 0.4, 3000000));
+  // But never less than the destination height + some margin
+  maxHeight = Math.max(maxHeight, destHeight + 5000);
+  var defaults = {
+    destination: dest,
+    duration: Math.max(0.8, Math.min(3.0, dist / 5000)),
+    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
+    maximumHeight: maxHeight,
+    pitchAdjustHeight: maxHeight * 0.5,
+  };
+  cam.flyTo(Object.assign(defaults, opts));
+}
+
 // Fly to a stop, using saved camera view if available, otherwise default offset view
 function flyToStop(stop) {
   let dest, heading, pitch;
@@ -5699,12 +5722,8 @@ function flyToStop(stop) {
     heading = 0;
     pitch = Cesium.Math.toRadians(-45);
   }
-  const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
-  viewer.camera.flyTo({
-    destination: dest,
+  constrainedFlyTo(viewer.camera, dest, {
     orientation: { heading: heading, pitch: pitch, roll: 0 },
-    duration: d,
-    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
   });
 }
 
@@ -5929,15 +5948,14 @@ function fitMapToTrip() {
   // Use steeper (more top-down) pitch for tight clusters, shallower for wide areas
   const pitch = extentKm < 5 ? -75 : extentKm < 500 ? -55 : -65;
 
-  viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(centerLng, centerLat, altitude),
+  var frameDest = Cesium.Cartesian3.fromDegrees(centerLng, centerLat, altitude);
+  constrainedFlyTo(viewer.camera, frameDest, {
     orientation: {
       heading: 0,
       pitch: Cesium.Math.toRadians(pitch),
       roll: 0,
     },
     duration: 2.5,
-    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
     complete: function() {
       viewer.scene.requestRender();
     }
@@ -6150,17 +6168,8 @@ function flyToPhoto(photo, callback) {
   const hpr = getPhotoFlyOffset(photo);
   const cam = computeCameraFromHPR(photo.lat, photo.lng, hpr);
 
-  // Adaptive duration based on distance from current camera position
-  const currentPos = viewer.camera.positionWC;
-  const dist = Cesium.Cartesian3.distance(currentPos, cam.destination);
-  // Short hops (< 5km) are quick; cross-globe flights take longer
-  const duration = Math.max(0.8, Math.min(3.0, dist / 5000));
-
-  viewer.camera.flyTo({
-    destination: cam.destination,
+  constrainedFlyTo(viewer.camera, cam.destination, {
     orientation: cam.orientation,
-    duration: duration,
-    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
     complete: function() {
       viewer.scene.requestRender();
       if (callback) callback();
@@ -6260,12 +6269,8 @@ function renderTimeline() {
           const camHeight = 12000;
           const latOff = camHeight / 111320;
           const dest = Cesium.Cartesian3.fromDegrees(lng, lat - latOff, camHeight);
-          const d = Math.max(0.8, Math.min(3.0, Cesium.Cartesian3.distance(viewer.camera.positionWC, dest) / 5000));
-          viewer.camera.flyTo({
-            destination: dest,
+          constrainedFlyTo(viewer.camera, dest, {
             orientation: { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
-            duration: d,
-            easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
           });
         }
       }
@@ -7154,11 +7159,9 @@ function initPresGlobe(containerEl, stop) {
     orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
   });
 
-  presGlobeViewer.camera.flyTo({
-    destination: dest,
+  constrainedFlyTo(presGlobeViewer.camera, dest, {
     orientation: { heading: heading, pitch: pitch, roll: 0 },
     duration: 3.0,
-    easingFunction: Cesium.EasingFunction.QUADRATIC_IN_OUT,
   });
 }
 
