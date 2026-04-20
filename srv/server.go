@@ -1778,6 +1778,106 @@ func reverseGeocode(lat, lng float64) string {
 	return ""
 }
 
+// reverseGeocodeCity returns a city-level location name for lat/lng.
+// Makes a single zoom=10 request and extracts the best city-level name from
+// the address fields.  Detects "District" names (common in Chinese
+// mega-cities like Beijing) and falls back to the real city from
+// display_name or a zoom=5 request.
+func reverseGeocodeCity(lat, lng float64) string {
+	url := fmt.Sprintf(
+		"https://nominatim.openstreetmap.org/reverse?lat=%f&lon=%f&format=json&zoom=10&addressdetails=1&accept-language=en",
+		lat, lng,
+	)
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", "MyTravels/1.0")
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		DisplayName string `json:"display_name"`
+		Address     struct {
+			City        string `json:"city"`
+			Town        string `json:"town"`
+			Village     string `json:"village"`
+			County      string `json:"county"`
+			State       string `json:"state"`
+			District    string `json:"district"`
+			Country     string `json:"country"`
+			CountryCode string `json:"country_code"`
+		} `json:"address"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+
+	a := result.Address
+
+	// Pick the best locality name.
+	locality := a.City
+
+	// If city looks like a district ("Dongcheng District", "Changping District"),
+	// try to extract the real city from display_name.
+	// display_name is "Suburb, District, CityOrRegion, ..., Country".
+	if locality != "" && (strings.Contains(locality, "District") || strings.Contains(locality, "Subdistrict")) {
+		// Parse display_name parts and find the entry after the district name.
+		parts := strings.Split(result.DisplayName, ", ")
+		for i, p := range parts {
+			if strings.TrimSpace(p) == strings.TrimSpace(locality) && i+1 < len(parts) {
+				// The next non-postcode, non-country part is often the real city.
+				for j := i + 1; j < len(parts)-1; j++ { // skip last (Country)
+					candidate := strings.TrimSpace(parts[j])
+					// Skip postcodes (all digits)
+					if candidate != "" && !isPostcode(candidate) {
+						locality = candidate
+						break
+					}
+				}
+				break
+			}
+		}
+	}
+
+	if locality == "" {
+		locality = a.Town
+	}
+	if locality == "" {
+		locality = a.Village
+	}
+	if locality == "" {
+		locality = a.County
+	}
+	if locality == "" {
+		locality = a.State
+	}
+
+	if locality != "" && a.Country != "" {
+		return locality + ", " + a.Country
+	}
+	if a.Country != "" {
+		return a.Country
+	}
+	return ""
+}
+
+// isPostcode returns true if s looks like a postal code (all digits or digits with spaces/hyphens).
+func isPostcode(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			if c != ' ' && c != '-' {
+				return false
+			}
+		}
+	}
+	return len(s) > 0
+}
+
 // haversineMeters returns distance in meters between two lat/lng points.
 func haversineMeters(lat1, lng1, lat2, lng2 float64) float64 {
 	const R = 6371000.0 // Earth radius in meters

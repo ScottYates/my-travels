@@ -4236,8 +4236,8 @@ function renderTripDetail() {
   // ---- STOPS ----
   html += '<div class="section-header" id="stopsHeader" style="cursor:pointer">';
   html += '<h3><span class="section-toggle" id="stopsToggle">▼</span> 📌 Stops (' + stops.length + ')</h3>';
-  html += '<div class="edit-only" style="display:flex;gap:6px" onclick="event.stopPropagation()">';
-  if (stops.length > 0 && photos.length > 0) {
+  html += '<div class="edit-only" style="display:flex;gap:6px;align-items:center" onclick="event.stopPropagation()">';
+  if (photos.length > 0) {
     html += '<button class="btn btn-sm edit-only" id="resortPhotosBtn" style="background:var(--navy-lighter);color:var(--text);border:1px solid var(--border)" title="Re-sort all photos into stops by location and time">🔀 Re-sort</button>';
   }
   html += '<button class="btn btn-orange btn-sm edit-only" id="addStopBtn">+ Add Stop</button>';
@@ -4382,6 +4382,94 @@ function renderTripDetail() {
   wireDetailEvents();
 }
 
+// ---- Re-sort Dialog ----
+function showResortDialog(trip) {
+  const photos = (trip.photos || []);
+  const withGPS = photos.filter(p => p.lat != null && p.lng != null).length;
+  const withTime = photos.filter(p => p.taken_at).length;
+  const noData = photos.filter(p => (p.lat == null || p.lng == null) && !p.taken_at).length;
+
+  // Create modal overlay
+  const overlay = document.createElement('div');
+  overlay.id = 'resortOverlay';
+  overlay.style.cssText = 'position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center';
+  overlay.innerHTML = `
+    <div style="background:var(--navy-light);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:420px;width:90%;color:var(--text);font-family:inherit">
+      <h3 style="margin:0 0 12px 0;font-size:16px">🔀 Re-sort Photos into Stops</h3>
+      <p style="font-size:13px;color:var(--text-muted);margin:0 0 16px 0">
+        This will <strong>delete all existing stops</strong> and create new ones
+        by walking through your photos in time order, starting a new stop whenever
+        photos move beyond the radius.
+      </p>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px;line-height:1.6">
+        <div>📷 ${photos.length} photos total</div>
+        <div>📍 ${withGPS} with GPS · ⏰ ${withTime} with timestamp</div>
+        ${noData > 0 ? '<div>⚠️ ' + noData + ' without GPS or timestamp (will stay unassigned)</div>' : ''}
+      </div>
+      <label style="display:block;margin-bottom:16px">
+        <span style="font-size:13px;font-weight:500">Stop radius</span>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+          <input type="range" id="resortRadius" min="1" max="100" value="10" step="1"
+            style="flex:1;accent-color:var(--accent)">
+          <input type="number" id="resortRadiusNum" min="1" max="500" value="10" step="1"
+            style="width:60px;padding:4px 6px;background:var(--navy);color:var(--text);border:1px solid var(--border);border-radius:var(--radius-sm);text-align:center;font-size:13px">
+          <span style="font-size:13px;color:var(--text-muted)">km</span>
+        </div>
+        <p style="font-size:11px;color:var(--text-dim);margin:4px 0 0 0">
+          Photos within this distance stay in the same stop. Smaller = more stops.
+        </p>
+      </label>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button id="resortCancel" class="btn btn-sm" style="background:var(--navy-lighter);color:var(--text);border:1px solid var(--border)">Cancel</button>
+        <button id="resortConfirm" class="btn btn-sm" style="background:var(--accent);color:#fff;border:none;font-weight:600">🔀 Re-sort</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Sync slider <-> number input
+  const slider = overlay.querySelector('#resortRadius');
+  const numInput = overlay.querySelector('#resortRadiusNum');
+  slider.addEventListener('input', () => { numInput.value = slider.value; });
+  numInput.addEventListener('input', () => {
+    let v = parseInt(numInput.value) || 10;
+    if (v > 500) v = 500;
+    if (v < 1) v = 1;
+    slider.value = Math.min(v, 100);
+  });
+
+  // Cancel
+  const close = () => overlay.remove();
+  overlay.querySelector('#resortCancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  // Confirm
+  overlay.querySelector('#resortConfirm').addEventListener('click', async () => {
+    const radiusKm = parseFloat(numInput.value) || 10;
+    const confirmBtn = overlay.querySelector('#resortConfirm');
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = '\u23f3 Sorting...';
+    overlay.querySelector('#resortCancel').disabled = true;
+    try {
+      const updated = await api('POST', '/api/trips/' + trip.id + '/resort-photos', { radius_km: radiusKm });
+      state.currentTrip = updated;
+      close();
+      renderTripDetail();
+      renderMapData();
+      renderTimeline();
+      fitMapToTrip();
+      const newStops = (updated.stops || []).length;
+      const newUnassigned = (updated.photos || []).filter(p => !p.stop_id).length;
+      const assigned = photos.length - newUnassigned;
+      toast('Created ' + newStops + ' stops (' + radiusKm + ' km radius) · ' + assigned + ' photos assigned, ' + newUnassigned + ' unassigned');
+    } catch (err) {
+      close();
+      toast('Failed to re-sort: ' + err.message, 'error');
+      await reloadCurrentTrip();
+    }
+  });
+}
+
 function wireDetailEvents() {
   const trip = state.currentTrip;
   if (!trip) return;
@@ -4443,31 +4531,10 @@ function wireDetailEvents() {
   // Re-sort photos into stops
   const resortBtn = $('#resortPhotosBtn');
   if (resortBtn) {
-    resortBtn.addEventListener('click', async () => {
+    resortBtn.addEventListener('click', () => {
       const trip = state.currentTrip;
       if (!trip) return;
-      const stops = (trip.stops || []);
-      const photos = (trip.photos || []);
-      const unassigned = photos.filter(p => !p.stop_id).length;
-      const msg = 'Re-sort all ' + photos.length + ' photos into ' + stops.length + ' stops based on location and time?\n\n' +
-        'Currently ' + unassigned + ' photo' + (unassigned !== 1 ? 's are' : ' is') + ' unassigned.\n\n' +
-        'This will reassign ALL photos (including ones already in stops).';
-      if (!confirm(msg)) return;
-      resortBtn.disabled = true;
-      resortBtn.textContent = '⏳ Sorting...';
-      try {
-        const updated = await api('POST', '/api/trips/' + trip.id + '/resort-photos');
-        state.currentTrip = updated;
-        renderTripDetail();
-        renderMapData();
-        renderTimeline();
-        const newUnassigned = (updated.photos || []).filter(p => !p.stop_id).length;
-        const assigned = photos.length - newUnassigned;
-        toast('Re-sorted: ' + assigned + ' photos assigned to stops, ' + newUnassigned + ' unassigned');
-      } catch (err) {
-        toast('Failed to re-sort photos: ' + err.message, 'error');
-        await reloadCurrentTrip();
-      }
+      showResortDialog(trip);
     });
   }
 
