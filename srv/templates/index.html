@@ -5685,14 +5685,13 @@ $('#cancelDraw').addEventListener('click', () => {
 // ---------------------------------------------------------------
 var _photoLoadGeneration = 0; // cancellation token for async photo thumbnail loading
 
-// Custom fly-to: zoom out from current, rotate globe to face destination, zoom in.
-// Three phases: (1) pull back, (2) rotate/pan, (3) dive in.
-// If destination is already in view, skip phases 1-2 and just zoom in.
+// Custom fly-to animation.
+// Short/medium distances: simple zoom-out then zoom-in (no globe spin).
+// Very long distances (destination behind the globe): adds a rotate phase.
 var _flyAnimId = 0;
 function constrainedFlyTo(cam, dest, opts) {
   opts = opts || {};
   var id = ++_flyAnimId;
-  // Determine which scene to requestRender on
   var scene;
   if (typeof presGlobeViewer !== 'undefined' && presGlobeViewer && cam === presGlobeViewer.camera) {
     scene = presGlobeViewer.scene;
@@ -5700,38 +5699,36 @@ function constrainedFlyTo(cam, dest, opts) {
     scene = viewer.scene;
   }
 
-  // Extract destination lat/lng/height
   var destCarto = Cesium.Cartographic.fromCartesian(dest);
   var destLat = Cesium.Math.toDegrees(destCarto.latitude);
   var destLng = Cesium.Math.toDegrees(destCarto.longitude);
   var destHeight = destCarto.height;
 
-  // Current camera position in geographic coords
   var curCarto = cam.positionCartographic;
   var curLat = Cesium.Math.toDegrees(curCarto.latitude);
   var curLng = Cesium.Math.toDegrees(curCarto.longitude);
   var curHeight = curCarto.height;
 
-  // Target orientation
   var targetHeading = (opts.orientation && opts.orientation.heading != null) ? opts.orientation.heading : 0;
   var targetPitch = (opts.orientation && opts.orientation.pitch != null) ? opts.orientation.pitch : Cesium.Math.toRadians(-45);
 
-  // Angular distance on the globe surface (great-circle)
+  // Great-circle angular distance
   var dLat = Cesium.Math.toRadians(destLat - curLat);
   var dLng = Cesium.Math.toRadians(destLng - curLng);
   var a = Math.sin(dLat/2)*Math.sin(dLat/2) +
           Math.cos(Cesium.Math.toRadians(curLat))*Math.cos(Cesium.Math.toRadians(destLat))*
           Math.sin(dLng/2)*Math.sin(dLng/2);
-  var angularDist = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); // radians
+  var angularDist = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  var angularDistDeg = Cesium.Math.toDegrees(angularDist);
   var surfaceDistKm = angularDist * 6371;
 
-  // Compute pull-back height: enough to see both points
-  // For short hops (<5km), barely rise. For 1000km+, go higher.
-  var pullBackHeight = Math.max(destHeight * 2, Math.min(surfaceDistKm * 800, 6000000));
-  pullBackHeight = Math.max(pullBackHeight, curHeight, destHeight + 5000);
+  // Shortest longitude path
+  var lngDiff = destLng - curLng;
+  if (lngDiff > 180) lngDiff -= 360;
+  if (lngDiff < -180) lngDiff += 360;
 
-  // If very close (< 2km surface), just use Cesium's native flyTo
-  if (surfaceDistKm < 2) {
+  // Very close: use native Cesium flyTo directly
+  if (surfaceDistKm < 5) {
     cam.flyTo({
       destination: dest,
       orientation: opts.orientation || { heading: 0, pitch: Cesium.Math.toRadians(-45), roll: 0 },
@@ -5742,21 +5739,25 @@ function constrainedFlyTo(cam, dest, opts) {
     return;
   }
 
-  // Total duration: adaptive based on distance
-  var totalDuration = opts.duration || Math.max(1.2, Math.min(3.5, 1.2 + surfaceDistKm / 2000));
+  // Decide mode: need globe rotation only if angular distance > 60°
+  // (destination is far around the globe and can't be seen from a simple pull-back)
+  var needsRotate = angularDistDeg > 60;
 
-  // Phase splits: pull-back 25%, rotate 35%, zoom-in 40%
-  var t1 = 0.25, t2 = 0.60; // phase boundaries as fraction of total
+  // Pull-back height: just enough to see both start and destination
+  // For the no-rotate case, pull back above the midpoint high enough that
+  // both locations fit in the viewport (~60° FOV).
+  var pullBackHeight;
+  if (needsRotate) {
+    pullBackHeight = Math.min(surfaceDistKm * 600, 8000000);
+  } else {
+    // Height to see both points: surface distance in meters / (2 * tan(30°))
+    // plus some padding. This keeps the arc low for nearby stops.
+    pullBackHeight = Math.max(surfaceDistKm * 500, destHeight * 2, 15000);
+  }
+  pullBackHeight = Math.max(pullBackHeight, curHeight * 0.8, destHeight + 3000);
 
-  // Midpoint for the rotate phase: look-down at halfway between start and dest
-  var midLat = (curLat + destLat) / 2;
-  // Shortest longitude path
-  var lngDiff = destLng - curLng;
-  if (lngDiff > 180) lngDiff -= 360;
-  if (lngDiff < -180) lngDiff += 360;
-  var midLng = curLng + lngDiff / 2;
+  var totalDuration = opts.duration || Math.max(1.0, Math.min(3.5, 1.0 + surfaceDistKm / 3000));
 
-  // Easing: smooth cubic in-out
   function ease(t) {
     return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2;
   }
@@ -5766,7 +5767,7 @@ function constrainedFlyTo(cam, dest, opts) {
   var startPitch = cam.pitch;
 
   function animate(timestamp) {
-    if (id !== _flyAnimId) return; // cancelled
+    if (id !== _flyAnimId) return;
     if (!startTime) startTime = timestamp;
     var elapsed = (timestamp - startTime) / 1000;
     var t = Math.min(elapsed / totalDuration, 1);
@@ -5774,30 +5775,60 @@ function constrainedFlyTo(cam, dest, opts) {
 
     var lat, lng, height, heading, pitch;
 
-    if (t <= t1) {
-      // Phase 1: Pull back from current position, start turning toward mid
-      var p = et / ease(t1); // progress within phase 1
-      lat = curLat + (midLat - curLat) * p * 0.3;
-      lng = curLng + lngDiff * 0.5 * p * 0.3;
-      height = curHeight + (pullBackHeight - curHeight) * p;
-      heading = startHeading + (targetHeading - startHeading) * p * 0.3;
-      pitch = startPitch + (Cesium.Math.toRadians(-90) - startPitch) * p;
-    } else if (t <= t2) {
-      // Phase 2: Rotate/pan — camera at pull-back height, sweeping toward destination
-      var p = (et - ease(t1)) / (ease(t2) - ease(t1));
-      lat = curLat + (midLat - curLat) * 0.3 + (destLat - (curLat + (midLat - curLat) * 0.3)) * p;
-      lng = curLng + lngDiff * 0.5 * 0.3 + (lngDiff - lngDiff * 0.5 * 0.3) * p;
-      height = pullBackHeight;
-      heading = startHeading + (targetHeading - startHeading) * (0.3 + 0.7 * p);
-      pitch = Cesium.Math.toRadians(-90) + (targetPitch - Cesium.Math.toRadians(-90)) * p * 0.2;
+    if (needsRotate) {
+      // 3-phase: pull-back (0-0.25), rotate (0.25-0.55), zoom-in (0.55-1)
+      var t1 = 0.25, t2 = 0.55;
+      if (t <= t1) {
+        var p = et / ease(t1);
+        lat = curLat;
+        lng = curLng;
+        height = curHeight + (pullBackHeight - curHeight) * p;
+        heading = startHeading + (targetHeading - startHeading) * p * 0.2;
+        pitch = startPitch + (Cesium.Math.toRadians(-90) - startPitch) * p;
+      } else if (t <= t2) {
+        var p = (et - ease(t1)) / (ease(t2) - ease(t1));
+        lat = curLat + (destLat - curLat) * p;
+        lng = curLng + lngDiff * p;
+        height = pullBackHeight;
+        heading = startHeading + (targetHeading - startHeading) * (0.2 + 0.6 * p);
+        pitch = Cesium.Math.toRadians(-90);
+      } else {
+        var p = (et - ease(t2)) / (1 - ease(t2));
+        lat = destLat;
+        lng = destLng;
+        height = pullBackHeight + (destHeight - pullBackHeight) * p;
+        heading = startHeading + (targetHeading - startHeading) * (0.8 + 0.2 * p);
+        pitch = Cesium.Math.toRadians(-90) + (targetPitch - Cesium.Math.toRadians(-90)) * p;
+      }
     } else {
-      // Phase 3: Zoom in to destination
-      var p = (et - ease(t2)) / (1 - ease(t2));
-      lat = destLat;
-      lng = destLng;
-      height = pullBackHeight + (destHeight - pullBackHeight) * p;
-      heading = targetHeading;
-      pitch = Cesium.Math.toRadians(-90) + (targetPitch - Cesium.Math.toRadians(-90)) * (0.2 + 0.8 * p);
+      // 2-phase: zoom out to midpoint (0-0.45), zoom in to dest (0.45-1)
+      // Camera lat/lng slides from start to dest throughout.
+      // Height follows a smooth arc: up then down.
+      var tMid = 0.45;
+      // Smooth position interpolation from start to dest
+      var posT = et;
+      lat = curLat + (destLat - curLat) * posT;
+      lng = curLng + lngDiff * posT;
+      heading = startHeading + (targetHeading - startHeading) * posT;
+
+      // Height arc: parabola peaking at pullBackHeight
+      // h(t) = destHeight + (pullBackHeight - destHeight) * 4*t*(1-t) when start~=dest height
+      // More precisely, blend start height → peak → dest height
+      var arcT = et;
+      var baseHeight = curHeight + (destHeight - curHeight) * arcT;
+      var arc = 4 * arcT * (1 - arcT); // peaks at 1.0 when arcT=0.5
+      height = baseHeight + (pullBackHeight - baseHeight) * arc;
+      // Ensure we never go below dest height
+      height = Math.max(height, Math.min(curHeight, destHeight));
+
+      // Pitch: ease from current to slightly top-down at peak, then to target
+      if (et < 0.5) {
+        var pp = et / 0.5;
+        pitch = startPitch + (Cesium.Math.toRadians(-75) - startPitch) * pp;
+      } else {
+        var pp = (et - 0.5) / 0.5;
+        pitch = Cesium.Math.toRadians(-75) + (targetPitch - Cesium.Math.toRadians(-75)) * pp;
+      }
     }
 
     cam.setView({
@@ -5809,7 +5840,6 @@ function constrainedFlyTo(cam, dest, opts) {
     if (t < 1) {
       requestAnimationFrame(animate);
     } else {
-      // Snap to exact final position
       cam.setView({
         destination: dest,
         orientation: opts.orientation || { heading: targetHeading, pitch: targetPitch, roll: 0 },
