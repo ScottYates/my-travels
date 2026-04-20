@@ -128,3 +128,6 @@ UPDATE trips SET present_slug = ?, updated_at = ? WHERE id = ?;
 
 -- name: ClaimOrphanedTrips :exec
 UPDATE trips SET user_id = ? WHERE user_id IS NULL;
+
+-- name: ShiftStopOrders :exec
+UPDATE stops SET stop_order = stop_order + 1 WHERE trip_id = ? AND stop_order >= ?;

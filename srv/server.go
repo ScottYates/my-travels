@@ -864,6 +864,7 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 		Lng         float64    `json:"lng"`
 		Elevation   float64    `json:"elevation"`
 		ArrivedAt   *time.Time `json:"arrived_at"`
+		StopOrder   *int64     `json:"stop_order"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid JSON body", http.StatusBadRequest)
@@ -882,17 +883,26 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine next stop order
+	// Determine stop order: use provided order (shifting existing), or append
 	var nextOrder int64
-	maxOrder, err := q.MaxStopOrder(r.Context(), tripID)
-	if err == nil && maxOrder != nil {
-		switch v := maxOrder.(type) {
-		case int64:
-			nextOrder = v + 1
-		case float64:
-			nextOrder = int64(v) + 1
-		default:
-			nextOrder = 0
+	if body.StopOrder != nil {
+		nextOrder = *body.StopOrder
+		// Shift existing stops to make room
+		q.ShiftStopOrders(r.Context(), dbgen.ShiftStopOrdersParams{
+			TripID:    tripID,
+			StopOrder: nextOrder,
+		})
+	} else {
+		maxOrder, err := q.MaxStopOrder(r.Context(), tripID)
+		if err == nil && maxOrder != nil {
+			switch v := maxOrder.(type) {
+			case int64:
+				nextOrder = v + 1
+			case float64:
+				nextOrder = int64(v) + 1
+			default:
+				nextOrder = 0
+			}
 		}
 	}
 

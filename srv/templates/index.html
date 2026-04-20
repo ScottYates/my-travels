@@ -513,6 +513,54 @@ textarea.form-input {
 .photo-stop-sep::before, .photo-stop-sep::after {
   content: ''; flex: 1; height: 1px; background: var(--border);
 }
+.photo-stop-sep .stop-title-editable {
+  cursor: text; padding: 2px 6px; border-radius: 3px;
+  transition: background 0.15s;
+}
+.photo-stop-sep .stop-title-editable:hover {
+  background: rgba(255,255,255,0.08);
+}
+.photo-stop-sep .stop-title-editable:focus {
+  outline: none; background: rgba(255,255,255,0.12);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.photo-stop-sep .stop-location-name {
+  font-size: 10px; color: var(--text-dim); font-weight: 400;
+  text-transform: none; letter-spacing: 0;
+}
+/* Inline add-stop button between photo groups */
+.inline-add-stop {
+  display: flex; align-items: center; gap: 8px;
+  margin: 4px 0; opacity: 0; transition: opacity 0.2s;
+}
+.inline-add-stop:hover, .inline-add-stop:focus-within { opacity: 1; }
+.inline-add-stop::before, .inline-add-stop::after {
+  content: ''; flex: 1; height: 1px; background: var(--border); opacity: 0.5;
+}
+.inline-add-stop button {
+  font-size: 11px; padding: 2px 10px; border: 1px dashed var(--border);
+  background: transparent; color: var(--text-dim); border-radius: 12px;
+  cursor: pointer; white-space: nowrap; transition: all 0.15s;
+}
+.inline-add-stop button:hover {
+  border-color: var(--accent); color: var(--accent); background: rgba(255,165,0,0.08);
+}
+/* Resort progress bar */
+.resort-progress {
+  margin: 16px 0 12px;
+}
+.resort-progress-bar {
+  width: 100%; height: 6px; background: var(--navy); border-radius: 3px;
+  overflow: hidden; margin: 8px 0 6px;
+}
+.resort-progress-bar-fill {
+  height: 100%; background: var(--accent); border-radius: 3px;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+.resort-progress-status {
+  font-size: 12px; color: var(--text-muted); min-height: 18px;
+}
 /* Photo grid */
 .photo-grid {
   display: grid;
@@ -4340,10 +4388,25 @@ function renderTripDetail() {
     }
 
     const isEdit = !state.readOnly;
-    groups.forEach(g => {
+    groups.forEach((g, gi) => {
       const gStopId = g.stop ? escapeHtml(g.stop.id) : '';
+
+      // Inline add-stop button before each group (edit mode only)
+      if (isEdit && gi === 0 && stopOrder.length > 0) {
+        html += '<div class="inline-add-stop edit-only"><button class="add-stop-inline-btn" data-insert-order="0">+ Add Stop</button></div>';
+      }
+
       if (g.stop) {
-        html += '<div class="photo-stop-sep" data-stop-id="' + gStopId + '"><span>' + escapeHtml(g.stop.title || 'Untitled Stop') + '</span></div>';
+        html += '<div class="photo-stop-sep" data-stop-id="' + gStopId + '">';
+        if (isEdit) {
+          html += '<span class="stop-title-editable" contenteditable="true" data-stop-id="' + gStopId + '" spellcheck="false">' + escapeHtml(g.stop.title || 'Untitled Stop') + '</span>';
+        } else {
+          html += '<span>' + escapeHtml(g.stop.title || 'Untitled Stop') + '</span>';
+        }
+        if (g.stop.location_name) {
+          html += ' <span class="stop-location-name">(' + escapeHtml(g.stop.location_name) + ')</span>';
+        }
+        html += '</div>';
       } else if (groups.length > 1) {
         html += '<div class="photo-stop-sep" data-stop-id=""><span>Unassigned</span></div>';
       }
@@ -4363,6 +4426,12 @@ function renderTripDetail() {
         html += '</div>';
       });
       html += '</div>';
+
+      // Inline add-stop button after each group (edit mode only)
+      if (isEdit && g.stop) {
+        const afterOrder = g.stop.stop_order + 1;
+        html += '<div class="inline-add-stop edit-only"><button class="add-stop-inline-btn" data-after-stop="' + gStopId + '" data-insert-order="' + afterOrder + '">+ Add Stop</button></div>';
+      }
     });
 
     // Always show an "Unassigned" drop zone in edit mode if there are stops
@@ -4447,21 +4516,119 @@ function showResortDialog(trip) {
   overlay.querySelector('#resortConfirm').addEventListener('click', async () => {
     const radiusKm = parseFloat(numInput.value) || 10;
     const confirmBtn = overlay.querySelector('#resortConfirm');
+    const cancelBtn = overlay.querySelector('#resortCancel');
     confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
     confirmBtn.textContent = '\u23f3 Sorting...';
-    overlay.querySelector('#resortCancel').disabled = true;
+
+    // Insert progress bar into the dialog
+    const dialogContent = confirmBtn.closest('div').parentElement;
+    let progressDiv = dialogContent.querySelector('.resort-progress');
+    if (!progressDiv) {
+      progressDiv = document.createElement('div');
+      progressDiv.className = 'resort-progress';
+      progressDiv.innerHTML = '<div class="resort-progress-status">Analyzing photos...</div>'
+        + '<div class="resort-progress-bar"><div class="resort-progress-bar-fill"></div></div>';
+      // Insert before the button row
+      const btnRow = confirmBtn.closest('div');
+      btnRow.parentElement.insertBefore(progressDiv, btnRow);
+    }
+    const barFill = progressDiv.querySelector('.resort-progress-bar-fill');
+    const statusEl = progressDiv.querySelector('.resort-progress-status');
+
     try {
-      const updated = await api('POST', '/api/trips/' + trip.id + '/resort-photos', { radius_km: radiusKm });
-      state.currentTrip = updated;
-      close();
-      renderTripDetail();
-      renderMapData();
-      renderTimeline();
-      fitMapToTrip();
-      const newStops = (updated.stops || []).length;
-      const newUnassigned = (updated.photos || []).filter(p => !p.stop_id).length;
-      const assigned = photos.length - newUnassigned;
-      toast('Created ' + newStops + ' stops (' + radiusKm + ' km radius) · ' + assigned + ' photos assigned, ' + newUnassigned + ' unassigned');
+      // Use fetch with SSE streaming
+      const res = await fetch('/api/trips/' + trip.id + '/resort-photos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ radius_km: radiusKm }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || 'API error');
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('text/event-stream')) {
+        // SSE streaming mode
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalTrip = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Parse SSE events from buffer
+          let idx;
+          while ((idx = buffer.indexOf('\n\n')) !== -1) {
+            const chunk = buffer.substring(0, idx);
+            buffer = buffer.substring(idx + 2);
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const evt = JSON.parse(line.substring(6));
+                  if (evt.step === 'clustered') {
+                    statusEl.textContent = 'Found ' + evt.total + ' stops. Geocoding...';
+                    barFill.style.width = '5%';
+                  } else if (evt.step === 'geocoding') {
+                    const pct = 5 + Math.round((evt.current / evt.total) * 85);
+                    barFill.style.width = pct + '%';
+                    statusEl.textContent = 'Geocoding stop ' + evt.current + ' of ' + evt.total + '...';
+                  } else if (evt.step === 'geocoded') {
+                    const pct = 5 + Math.round((evt.current / evt.total) * 85);
+                    barFill.style.width = pct + '%';
+                    const name = evt.stop_name || ('Stop ' + evt.current);
+                    statusEl.textContent = 'Stop ' + evt.current + '/' + evt.total + ': ' + name;
+                  } else if (evt.step === 'done') {
+                    barFill.style.width = '100%';
+                    statusEl.textContent = 'Done!';
+                    finalTrip = evt.trip;
+                  } else if (evt.step === 'error') {
+                    throw new Error(evt.message);
+                  }
+                } catch (parseErr) {
+                  if (parseErr.message !== evt?.message) { /* ignore JSON parse errors */ }
+                }
+              }
+            }
+          }
+        }
+
+        if (finalTrip) {
+          state.currentTrip = finalTrip;
+          setTimeout(() => {
+            close();
+            renderTripDetail();
+            renderMapData();
+            renderTimeline();
+            fitMapToTrip();
+            const newStops = (finalTrip.stops || []).length;
+            const newUnassigned = (finalTrip.photos || []).filter(p => !p.stop_id).length;
+            const assigned = photos.length - newUnassigned;
+            toast('Created ' + newStops + ' stops (' + radiusKm + ' km radius) \u00b7 ' + assigned + ' photos assigned, ' + newUnassigned + ' unassigned');
+          }, 400);
+        } else {
+          throw new Error('No result received');
+        }
+      } else {
+        // Fallback: plain JSON response
+        const updated = await res.json();
+        state.currentTrip = updated;
+        close();
+        renderTripDetail();
+        renderMapData();
+        renderTimeline();
+        fitMapToTrip();
+        const newStops = (updated.stops || []).length;
+        const newUnassigned = (updated.photos || []).filter(p => !p.stop_id).length;
+        const assigned = photos.length - newUnassigned;
+        toast('Created ' + newStops + ' stops (' + radiusKm + ' km radius) \u00b7 ' + assigned + ' photos assigned, ' + newUnassigned + ' unassigned');
+      }
     } catch (err) {
       close();
       toast('Failed to re-sort: ' + err.message, 'error');
@@ -4574,6 +4741,75 @@ function wireDetailEvents() {
         reloadCurrentTrip();
       } catch (err) {
         toast(err.message, 'error');
+      }
+    });
+  });
+
+  // Inline stop title editing
+  $$('.stop-title-editable').forEach(el => {
+    const stopId = el.dataset.stopId;
+    const origTitle = el.textContent;
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+      if (e.key === 'Escape') { el.textContent = origTitle; el.blur(); }
+    });
+    el.addEventListener('blur', async () => {
+      const newTitle = el.textContent.trim();
+      if (!newTitle || newTitle === origTitle) {
+        el.textContent = origTitle;
+        return;
+      }
+      const stop = (trip.stops || []).find(s => s.id === stopId);
+      if (!stop) return;
+      try {
+        await api('PUT', '/api/stops/' + stopId, {
+          title: newTitle,
+          description: stop.description || '',
+          lat: stop.lat, lng: stop.lng,
+          elevation: stop.elevation || 0,
+          stop_order: stop.stop_order,
+          arrived_at: stop.arrived_at ? new Date(stop.arrived_at).toISOString() : null,
+        });
+        // Update local state
+        stop.title = newTitle;
+        // Also update the stop item in the stops list
+        const stopItem = document.querySelector('.stop-item[data-stop-id="' + stopId + '"] h4');
+        if (stopItem) stopItem.textContent = newTitle;
+        toast('Stop renamed');
+      } catch (err) {
+        el.textContent = origTitle;
+        toast(err.message, 'error');
+      }
+    });
+  });
+
+  // Inline add stop buttons
+  $$('.add-stop-inline-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const insertOrder = parseInt(btn.dataset.insertOrder || '0');
+      const stops = (trip.stops || []).slice().sort((a,b) => a.stop_order - b.stop_order);
+      // Position: midpoint of adjacent stops, or copy the nearest
+      let lat = 0, lng = 0;
+      const prevStop = stops.find(s => s.stop_order === insertOrder - 1);
+      const nextStop = stops.find(s => s.stop_order === insertOrder);
+      if (prevStop && nextStop) {
+        lat = (prevStop.lat + nextStop.lat) / 2;
+        lng = (prevStop.lng + nextStop.lng) / 2;
+      } else if (prevStop) {
+        lat = prevStop.lat; lng = prevStop.lng;
+      } else if (nextStop) {
+        lat = nextStop.lat; lng = nextStop.lng;
+      }
+      try {
+        await api('POST', '/api/trips/' + trip.id + '/stops', {
+          title: 'New Stop', lat: lat, lng: lng, elevation: 0,
+          stop_order: insertOrder,
+        });
+        toast('Stop added');
+        await reloadCurrentTrip();
+      } catch (err) {
+        toast(err.message, 'error');
+        await reloadCurrentTrip();
       }
     });
   });

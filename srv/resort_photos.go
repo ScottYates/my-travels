@@ -13,26 +13,17 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Resort Photos Into Stops
-// ---------------------------------------------------------------------------
-//
-// Completely rebuilds stops from scratch by walking photos in chronological
-// order and clustering them spatially.  A new cluster (== stop) starts
-// whenever a photo is farther than `radius` from the current cluster's
-// centroid.  This means revisiting the same area creates a NEW stop,
-// preserving the traveller's actual itinerary.
-//
-// The radius (in km) is configurable via the request body; default 10 km.
-//
-// After building clusters the handler:
-//   1. Deletes old stops and un-assigns all photos.
-//   2. Creates new stops from the clusters.
-//   3. Reverse-geocodes each stop at city level (zoom=5).
-//   4. Assigns photos to their cluster stop, ordered by taken_at.
-//   5. Unassigned photos (no GPS) get photo_order but no stop.
+// Resort Photos Into Stops (with SSE progress)
 // ---------------------------------------------------------------------------
 
 const defaultResortRadiusKm = 10.0
+
+// sendSSE writes one Server-Sent Event and flushes.
+func sendSSE(w http.ResponseWriter, f http.Flusher, data interface{}) {
+	b, _ := json.Marshal(data)
+	fmt.Fprintf(w, "data: %s\n\n", b)
+	f.Flush()
+}
 
 func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -41,12 +32,11 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse optional radius from body.
 	var body struct {
 		RadiusKm *float64 `json:"radius_km"`
 	}
 	if r.Body != nil {
-		json.NewDecoder(r.Body).Decode(&body) // ignore errors; defaults are fine
+		json.NewDecoder(r.Body).Decode(&body)
 	}
 	radiusKm := defaultResortRadiusKm
 	if body.RadiusKm != nil && *body.RadiusKm > 0 {
@@ -57,7 +47,6 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := dbgen.New(s.DB)
 
-	// Fetch all photos, sorted by time then created_at.
 	photos, err := q.ListPhotos(ctx, trip.ID)
 	if err != nil {
 		log.Printf("resort: list photos: %v", err)
@@ -67,7 +56,6 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("resort: trip %s — %d photos, radius %.1f km", trip.ID, len(photos), radiusKm)
 
-	// Sort ALL photos by taken_at (nulls last), then created_at.
 	sortPhotosByTime(photos)
 
 	// ----- Build clusters by walking in time order -----
@@ -92,9 +80,6 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 		hasGPS := p.Lat != nil && p.Lng != nil
 
 		if !hasGPS {
-			// Photos without GPS: try to attach to current cluster (they
-			// appeared in time order, so they likely belong here).  If no
-			// cluster has started yet, save for later.
 			if cur != nil {
 				cur.photos = append(cur.photos, p)
 			} else {
@@ -106,7 +91,6 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 		plat, plng := *p.Lat, *p.Lng
 
 		if cur == nil || cur.nGPS == 0 {
-			// First GPS photo or first cluster — start a new cluster.
 			if cur == nil {
 				cur = &cluster{}
 				clusters = append(clusters, cur)
@@ -122,13 +106,11 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 		d := haversineMeters(plat, plng, clat, clng)
 
 		if d <= radiusMeters {
-			// Still in same cluster.
 			cur.photos = append(cur.photos, p)
 			cur.latSum += plat
 			cur.lngSum += plng
 			cur.nGPS++
 		} else {
-			// Too far — start a new cluster.
 			cur = &cluster{}
 			clusters = append(clusters, cur)
 			cur.photos = append(cur.photos, p)
@@ -140,6 +122,32 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("resort: %d clusters, %d photos without GPS (no cluster)", len(clusters), len(noGPS))
 
+	// Switch to SSE mode if the client supports it
+	flusher, canSSE := w.(http.Flusher)
+	if canSSE {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+	}
+
+	// Count real clusters (with GPS)
+	nReal := 0
+	for _, c := range clusters {
+		if c.nGPS > 0 {
+			nReal++
+		}
+	}
+
+	if canSSE {
+		sendSSE(w, flusher, map[string]interface{}{
+			"step":  "clustered",
+			"total": nReal,
+		})
+	}
+
 	// ----- Delete old stops, clear assignments -----
 	if err := q.DeleteStopsByTrip(ctx, id); err != nil {
 		log.Printf("resort: delete stops: %v", err)
@@ -150,6 +158,7 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 
 	// ----- Create new stops from clusters -----
 	now := time.Now()
+	geoIdx := 0
 	for order, c := range clusters {
 		if c.nGPS == 0 {
 			continue
@@ -158,7 +167,6 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 
 		clat, clng := centroid(c)
 
-		// Earliest taken_at in cluster.
 		var arrivedAt *time.Time
 		for _, p := range c.photos {
 			if p.TakenAt != nil {
@@ -169,11 +177,29 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 
 		title := fmt.Sprintf("Stop %d", order+1)
 
-		// Reverse geocode at city level (with rate limit).
 		if order > 0 {
 			time.Sleep(1100 * time.Millisecond)
 		}
+
+		geoIdx++
+		if canSSE {
+			sendSSE(w, flusher, map[string]interface{}{
+				"step":    "geocoding",
+				"current": geoIdx,
+				"total":   nReal,
+			})
+		}
+
 		locName := reverseGeocodeCity(clat, clng)
+
+		if canSSE {
+			sendSSE(w, flusher, map[string]interface{}{
+				"step":      "geocoded",
+				"current":   geoIdx,
+				"total":     nReal,
+				"stop_name": locName,
+			})
+		}
 
 		if err := q.CreateStop(ctx, dbgen.CreateStopParams{
 			ID:           stopID,
@@ -190,7 +216,6 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Assign photos.
 		sortPhotosByTime(c.photos)
 		for i, p := range c.photos {
 			sid := stopID
@@ -216,16 +241,32 @@ func (s *Server) handleResortPhotos(w http.ResponseWriter, r *http.Request) {
 	updatedTrip, err := q.GetTrip(ctx, id)
 	if err != nil {
 		log.Printf("resort: re-fetch trip: %v", err)
-		jsonError(w, "failed to read trip", http.StatusInternalServerError)
+		if canSSE {
+			sendSSE(w, flusher, map[string]string{"step": "error", "message": "failed to read trip"})
+		} else {
+			jsonError(w, "failed to read trip", http.StatusInternalServerError)
+		}
 		return
 	}
 	detail, err := s.buildTripDetail(r, updatedTrip)
 	if err != nil {
 		log.Printf("resort: build detail: %v", err)
-		jsonError(w, "failed to build trip detail", http.StatusInternalServerError)
+		if canSSE {
+			sendSSE(w, flusher, map[string]string{"step": "error", "message": "failed to build trip detail"})
+		} else {
+			jsonError(w, "failed to build trip detail", http.StatusInternalServerError)
+		}
 		return
 	}
-	jsonOK(w, detail)
+
+	if canSSE {
+		sendSSE(w, flusher, map[string]interface{}{
+			"step": "done",
+			"trip": detail,
+		})
+	} else {
+		jsonOK(w, detail)
+	}
 }
 
 // sortPhotosByTime sorts photos by taken_at (nulls last), then created_at.

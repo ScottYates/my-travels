@@ -846,6 +846,20 @@ func (q *Queries) SetPhotoStopID(ctx context.Context, arg SetPhotoStopIDParams) 
 	return err
 }
 
+const shiftStopOrders = `-- name: ShiftStopOrders :exec
+UPDATE stops SET stop_order = stop_order + 1 WHERE trip_id = ? AND stop_order >= ?
+`
+
+type ShiftStopOrdersParams struct {
+	TripID    string `json:"trip_id"`
+	StopOrder int64  `json:"stop_order"`
+}
+
+func (q *Queries) ShiftStopOrders(ctx context.Context, arg ShiftStopOrdersParams) error {
+	_, err := q.db.ExecContext(ctx, shiftStopOrders, arg.TripID, arg.StopOrder)
+	return err
+}
+
 const updateComment = `-- name: UpdateComment :exec
 UPDATE comments SET author = ?, body = ? WHERE id = ?
 `
