@@ -1507,7 +1507,9 @@ textarea.form-input {
 
 body.readonly .readonly-badge { display: inline-flex; }
 body.readonly .edit-only { display: none !important; }
+body.readonly .edit-only-input { pointer-events: none; opacity: 0.6; }
 body.no-auth .edit-only { display: none !important; }
+body.no-auth .edit-only-input { pointer-events: none; opacity: 0.6; }
 body.no-auth .readonly-badge { display: none !important; }
 
 /* Empty states */
@@ -2094,7 +2096,7 @@ body.no-auth .readonly-badge { display: none !important; }
   <img id="photoModalImg" src="" alt="">
   <video id="photoModalVideo" controls playsinline style="display:none"></video>
   <div class="photo-modal-info">
-    <input type="text" id="photoModalCaption" placeholder="Add a caption...">
+    <input type="text" id="photoModalCaption" placeholder="Add a caption..." class="edit-only-input">
     <select id="photoModalStop" class="photo-modal-stop-select edit-only"><option value="">No stop</option></select>
     <button class="btn btn-primary btn-sm edit-only" id="photoModalSave">Save</button>
     <button class="btn btn-secondary btn-sm edit-only" id="photoModalGeotag">📍 Set Location</button>
@@ -5678,6 +5680,8 @@ function showPhotoInModal(photo) {
     imgEl.style.display = '';
   }
   $('#photoModalCaption').value = photo.caption || '';
+  $('#photoModalCaption').readOnly = state.readOnly;
+  if (state.readOnly) $('#photoModalCaption').placeholder = '';
   // Populate stop selector
   const stopSel = $('#photoModalStop');
   const stops = (state.currentTrip?.stops || []).slice().sort((a,b) => a.stop_order - b.stop_order);
