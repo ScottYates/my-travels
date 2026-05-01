@@ -90,6 +90,7 @@ All configuration is via environment variables, loaded from a `.env` file in the
 |----------|---------|-------------|
 | `LISTEN` | `:8000` | Address and port to listen on |
 | `BASE_DIR` | *(directory of executable)* | Project root containing `srv/templates/`, `srv/static/`, and `uploads/` |
+| `LOG_DIR` | *(empty)* | Directory for daily log files (optional) |
 | `GOOGLE_CLIENT_ID` | *(empty)* | Google OAuth client ID (optional) |
 | `GOOGLE_CLIENT_SECRET` | *(empty)* | Google OAuth client secret (optional) |
 
@@ -98,6 +99,7 @@ Example `.env`:
 ```bash
 LISTEN=:8000
 BASE_DIR=/path/to/my-travels
+LOG_DIR=./logs
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 ```
@@ -192,6 +194,29 @@ journalctl -u srv -f
 ## Logging
 
 The server uses Go's structured `slog` package. All output goes to stderr (captured by systemd journal or your terminal).
+
+### File logging
+
+Set `LOG_DIR` to enable daily log files:
+
+```bash
+LOG_DIR=./logs
+```
+
+Logs are written to both stderr **and** a file named `YYYY-MM-DD.log` in the log directory. A new file is created each day the server starts (or restarts). The directory is created automatically if it doesn't exist.
+
+```
+logs/
+├── 2025-06-01.log
+├── 2025-06-02.log
+└── 2025-06-03.log
+```
+
+View today's logs:
+
+```bash
+tail -f logs/$(date +%Y-%m-%d).log
+```
 
 ### Startup logs
 

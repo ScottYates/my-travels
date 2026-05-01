@@ -1,4 +1,5 @@
 *.sqlite3*
 uploads/
+logs/
 my-travels
 .env
