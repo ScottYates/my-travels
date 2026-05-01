@@ -19,7 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -65,20 +65,48 @@ func jsonCreated(w http.ResponseWriter, data any) {
 }
 
 // New creates a new Server, initializes the database, and ensures the upload directory exists.
-func New(dbPath, hostname, googleClientID, googleClientSecret string) (*Server, error) {
-	_, thisFile, _, _ := runtime.Caller(0)
-	baseDir := filepath.Dir(thisFile)
-
-	uploadDir := filepath.Join(baseDir, "..", "uploads")
+func New(dbPath, hostname, googleClientID, googleClientSecret, baseDir string) (*Server, error) {
+	uploadDir := filepath.Join(baseDir, "uploads")
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create upload dir: %w", err)
 	}
 
+	// Templates and static files live in the srv/ source directory.
+	// When deployed, copy the srv/ directory alongside the binary, or
+	// pass -base-dir pointing at the repo root.
+	srvDir := filepath.Join(baseDir, "srv")
+	templatesDir := filepath.Join(srvDir, "templates")
+	staticDir := filepath.Join(srvDir, "static")
+
+	// Verify critical directories exist so we fail fast with a clear message.
+	for _, d := range []struct{ name, path string }{
+		{"templates", templatesDir},
+		{"static", staticDir},
+	} {
+		if _, err := os.Stat(d.path); os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s directory not found at %s — set -base-dir to the project root", d.name, d.path)
+		}
+	}
+
+	buildInfo, _ := debug.ReadBuildInfo()
+	goVersion := "unknown"
+	if buildInfo != nil {
+		goVersion = buildInfo.GoVersion
+	}
+
+	slog.Info("server init",
+		"base_dir", baseDir,
+		"upload_dir", uploadDir,
+		"templates_dir", templatesDir,
+		"static_dir", staticDir,
+		"go_version", goVersion,
+	)
+
 	srv := &Server{
 		Hostname:           hostname,
 		UploadDir:          uploadDir,
-		TemplatesDir:       filepath.Join(baseDir, "templates"),
-		StaticDir:          filepath.Join(baseDir, "static"),
+		TemplatesDir:       templatesDir,
+		StaticDir:          staticDir,
 		GoogleClientID:     googleClientID,
 		GoogleClientSecret: googleClientSecret,
 	}
@@ -278,7 +306,53 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/trips/{id}/resort-photos", s.handleResortPhotos)
 
 	slog.Info("starting server", "addr", addr)
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, requestLogger(mux))
+}
+
+// ---------------------------------------------------------------------------
+// Request logging middleware
+// ---------------------------------------------------------------------------
+
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+	bytes      int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.statusCode = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+func requestLogger(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, statusCode: 200}
+		next.ServeHTTP(rec, r)
+		duration := time.Since(start)
+
+		level := slog.LevelInfo
+		if rec.statusCode >= 500 {
+			level = slog.LevelError
+		} else if rec.statusCode >= 400 {
+			level = slog.LevelWarn
+		}
+
+		slog.Log(r.Context(), level, "http request",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.statusCode,
+			"bytes", rec.bytes,
+			"duration", duration.Round(time.Millisecond),
+			"remote", r.RemoteAddr,
+		)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,20 +1260,25 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 
 	// Parse multipart form (200 MB max to support video uploads)
 	if err := r.ParseMultipartForm(200 << 20); err != nil {
+		slog.Error("upload: parse multipart form", "error", err)
 		jsonError(w, "failed to parse multipart form", http.StatusBadRequest)
 		return
 	}
 
 	file, header, err := r.FormFile("photo")
 	if err != nil {
+		slog.Error("upload: photo field missing", "error", err)
 		jsonError(w, "photo field is required", http.StatusBadRequest)
 		return
 	}
 	defer file.Close()
 
+	slog.Info("upload: receiving file", "original_name", header.Filename, "size", header.Size, "trip_id", tripID)
+
 	// Read entire file into memory
 	fileData, err := io.ReadAll(file)
 	if err != nil {
+		slog.Error("upload: read file", "error", err)
 		jsonError(w, "failed to read file", http.StatusInternalServerError)
 		return
 	}
@@ -1217,9 +1296,11 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	// Save to upload dir
 	dstPath := filepath.Join(s.UploadDir, filename)
 	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil {
+		slog.Error("upload: write file to disk", "error", err, "path", dstPath)
 		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("upload: saved file", "path", dstPath, "bytes", len(fileData))
 
 	var exifLat, exifLng *float64
 	var exifTime *time.Time
@@ -1297,10 +1378,12 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    now,
 		IsVideo:      isVideo,
 	}); err != nil {
+		slog.Error("upload: create photo record", "error", err, "filename", filename)
 		os.Remove(dstPath)
 		jsonError(w, "failed to create photo record", http.StatusInternalServerError)
 		return
 	}
+	slog.Info("upload: photo created", "id", id, "filename", filename, "lat", lat, "lng", lng)
 
 	photo, err := q.GetPhoto(r.Context(), id)
 	if err != nil {

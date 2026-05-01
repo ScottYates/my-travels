@@ -1,2 +1,4 @@
 *.sqlite3*
 uploads/
+my-travels
+.env
