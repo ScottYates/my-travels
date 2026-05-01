@@ -91,21 +91,40 @@ To use a different port:
 
 ### 5. (Optional) Configure Google OAuth
 
-For Google login, set these environment variables before starting the server:
+Google OAuth lets users log in and own their trips. Without it, the app still runs but has no authentication.
+
+#### a. Create a Google Cloud OAuth client
+
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a project (or select an existing one)
+3. Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**
+4. Set **Application type** to **Web application**
+5. Under **Authorized redirect URIs**, add the callback URL for each environment where you'll run the app:
+   - Local development: `http://localhost:8000/auth/google/callback`
+   - exe.dev: `https://<vm-name>.exe.xyz:8000/auth/google/callback`
+   - Custom domain: `https://yourdomain.com/auth/google/callback`
+6. Copy the **Client ID** and **Client Secret**
+
+> The redirect URI must exactly match your deployment URL. The app builds it dynamically from the request origin + `/auth/google/callback`.
+
+#### b. Set environment variables
+
+For local development, export before starting the server:
 
 ```bash
 export GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
 export GOOGLE_CLIENT_SECRET="GOCSPX-your-secret"
+./my-travels
 ```
 
-Or create a `.env` file (loaded by the systemd service):
+For systemd deployment on exe.dev, create `/home/exedev/.env`:
 
 ```
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 ```
 
-The app works without OAuth — it just won't have login/logout functionality.
+The service unit loads this file automatically via `EnvironmentFile=-/home/exedev/.env`.
 
 ### 6. (Optional) Install ffmpeg for video support
 
