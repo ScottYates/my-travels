@@ -65,10 +65,7 @@ go mod download
 The Makefile builds the binary to the parent directory (`../srv` relative to the source root). For local development you can build wherever you like:
 
 ```bash
-# Default (builds to /home/exedev/srv for exe.dev deployment)
-make build
-
-# Or build locally
+# build locally
 go build -o my-travels ./cmd/srv
 ```
 
@@ -89,7 +86,7 @@ To use a different port:
 ./my-travels -listen :3000
 ```
 
-### 5. (Optional) Configure Google OAuth
+### 5. Configure Google OAuth
 
 Google OAuth lets users log in and own their trips. Without it, the app still runs but has no authentication.
 
@@ -101,7 +98,6 @@ Google OAuth lets users log in and own their trips. Without it, the app still ru
 4. Set **Application type** to **Web application**
 5. Under **Authorized redirect URIs**, add the callback URL for each environment where you'll run the app:
    - Local development: `http://localhost:8000/auth/google/callback`
-   - exe.dev: `https://<vm-name>.exe.xyz:8000/auth/google/callback`
    - Custom domain: `https://yourdomain.com/auth/google/callback`
 6. Copy the **Client ID** and **Client Secret**
 
@@ -117,15 +113,6 @@ export GOOGLE_CLIENT_SECRET="GOCSPX-your-secret"
 ./my-travels
 ```
 
-For systemd deployment on exe.dev, create `/home/exedev/.env`:
-
-```
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
-```
-
-The service unit loads this file automatically via `EnvironmentFile=-/home/exedev/.env`.
-
 ### 6. (Optional) Install ffmpeg for video support
 
 Video uploads require `ffmpeg` and `ffprobe` for thumbnail generation:
@@ -137,61 +124,6 @@ sudo apt-get install -y ffmpeg
 # macOS
 brew install ffmpeg
 ```
-
-## Deployment on exe.dev
-
-### Build and install the service
-
-```bash
-cd /home/exedev/my-travels
-make build                    # Builds binary to /home/exedev/srv
-```
-
-### Set up systemd
-
-```bash
-sudo cp srv.service /etc/systemd/system/srv.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now srv
-```
-
-The service runs as `exedev`, reads `/home/exedev/.env` for environment variables, and serves on port 8000.
-
-### Restart after code changes
-
-```bash
-make build
-sudo systemctl restart srv
-```
-
-### View logs
-
-```bash
-journalctl -u srv -f
-```
-
-### Access
-
-On exe.dev, the app is available at `https://<vm-name>.exe.xyz:8000/`.
-
-## Database
-
-SQLite with WAL mode, foreign keys enabled. The database file (`db.sqlite3`) is created automatically on first run.
-
-### Migrations
-
-Migrations live in `db/migrations/` and are applied automatically on startup. They follow the pattern `NNN-name.sql` and are tracked in a `migrations` table.
-
-### sqlc Code Generation
-
-SQL queries in `db/queries/` are compiled to Go code using [sqlc](https://sqlc.dev/):
-
-```bash
-cd db
-go tool github.com/sqlc-dev/sqlc/cmd/sqlc generate
-```
-
-Generated code goes to `db/dbgen/`. The sqlc tool is declared in `go.mod` so no separate install is needed.
 
 ## API Overview
 
@@ -215,5 +147,4 @@ All data is managed through JSON REST endpoints. Key routes:
 The app uses the free CesiumJS library with open tile providers (no Cesium Ion token required). Photo markers are rendered as circular billboard thumbnails on the globe at their GPS coordinates.
 
 ## License
-
-Private project.
+BSD Licence applies
