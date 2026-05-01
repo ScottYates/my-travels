@@ -4,11 +4,11 @@ A self-hosted travel journal with an interactive 3D globe. Organize trips into s
 
 ## Features
 
-- **3D Globe** — CesiumJS globe with photo markers at GPS coordinates, route polylines between stops, and fly-to navigation
-- **Trip / Stop / Photo management** — create trips, add ordered stops with locations, upload photos (EXIF GPS extraction) and videos
-- **Presentation mode** — full-screen slideshow with captions, mini-globe, and keyboard navigation
-- **Share links** — read-only URLs for sharing trips publicly (no login required)
-- **Google OAuth login** — optional; the app works without it on exe.dev (uses `X-ExeDev-*` headers)
+- **3D Globe** - CesiumJS globe with photo markers at GPS coordinates, route polylines between stops, and fly-to navigation
+- **Trip / Stop / Photo management** - create trips, add ordered stops with locations, upload photos (EXIF GPS extraction) and videos
+- **Presentation mode** - full-screen slideshow with captions, mini-globe, and keyboard navigation
+- **Share links** - read-only URLs for sharing trips publicly (no login required)
+- **Google OAuth login** - just click a few buttons and you are securely logged in to set up your own trips.
 - **SQLite database** — zero-config, file-based storage with auto-migrations
 - **Video support** — upload videos with ffmpeg-generated thumbnails
 
