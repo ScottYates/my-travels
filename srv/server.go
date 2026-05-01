@@ -689,6 +689,7 @@ func (s *Server) handleGetTrip(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := s.buildTripDetail(r, trip)
 	if err != nil {
+		slog.Error("handleGetTrip: build trip detail", "err", err, "trip_id", id)
 		jsonError(w, "failed to load trip details", http.StatusInternalServerError)
 		return
 	}
