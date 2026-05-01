@@ -276,6 +276,7 @@ body {
 /* View panels */
 .view-panel { display: none; padding: 20px 24px; }
 .view-panel.active { display: block; }
+#commentBrowserView.active { display: flex; flex-direction: column; min-height: 100%; padding: 0; }
 
 /* Buttons */
 .btn {
@@ -936,6 +937,112 @@ textarea.form-input {
   color: var(--orange);
   border-color: var(--orange);
 }
+
+/* Comment Browser */
+.comment-browser {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 16px 20px;
+  min-height: 0;
+}
+.cb-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.cb-header h3 { font-size: 15px; font-weight: 700; }
+.cb-counter {
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--navy-lighter);
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+.cb-photo-container {
+  position: relative;
+  background: var(--navy-darker);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.cb-photo-container img,
+.cb-photo-container video {
+  display: block;
+  width: 100%;
+  max-height: 300px;
+  object-fit: contain;
+  background: #000;
+}
+.cb-photo-caption {
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  background: var(--navy-light);
+  border-bottom: 1px solid var(--border);
+}
+.cb-photo-meta {
+  display: flex;
+  gap: 12px;
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.cb-comment-card {
+  background: var(--navy-light);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.cb-comment-author {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+  color: var(--accent);
+}
+.cb-comment-body {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.cb-comment-time {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.cb-nav {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 12px;
+  flex-shrink: 0;
+}
+.cb-nav button {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--navy-light);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+.cb-nav button:hover:not(:disabled) { background: var(--navy-lighter); }
+.cb-nav button:disabled { opacity: 0.35; cursor: default; }
+.cb-empty {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 40px 20px;
+  font-size: 14px;
+}
+.cb-empty-icon { font-size: 40px; margin-bottom: 12px; }
 
 /* Timeline view */
 .timeline {
@@ -2248,6 +2355,7 @@ body.no-auth .readonly-badge { display: none !important; }
     <div class="tab-bar" id="tabBar">
       <button class="tab-btn active" data-tab="detail">📋 Details</button>
       <button class="tab-btn" data-tab="timeline">📖 Timeline</button>
+      <button class="tab-btn" data-tab="comments" id="commentsTabBtn">💬 Comments</button>
     </div>
 
     <div class="sidebar-content" id="sidebarContent">
@@ -2255,8 +2363,12 @@ body.no-auth .readonly-badge { display: none !important; }
       <div class="view-panel active" id="tripsListView">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
           <h2 style="font-size:16px;font-weight:700">Your Trips</h2>
-          <button class="btn btn-primary btn-sm edit-only" id="newTripBtn">+ New Trip</button>
+          <div style="display:flex;gap:6px" class="edit-only">
+            <button class="btn btn-sm" id="importTripBtn" style="background:var(--navy-lighter);color:var(--text);border:1px solid var(--border)" title="Import a trip from a backup ZIP">📥 Import</button>
+            <button class="btn btn-primary btn-sm" id="newTripBtn">+ New Trip</button>
+          </div>
         </div>
+        <input type="file" id="importTripFile" accept=".zip" style="display:none">
         <div id="tripsList"></div>
       </div>
 
@@ -2268,6 +2380,11 @@ body.no-auth .readonly-badge { display: none !important; }
       <!-- TIMELINE VIEW -->
       <div class="view-panel" id="timelineView">
         <div id="timelineContent"></div>
+      </div>
+
+      <!-- COMMENT BROWSER VIEW -->
+      <div class="view-panel" id="commentBrowserView">
+        <div id="commentBrowserContent"></div>
       </div>
     </div>
 
@@ -2428,9 +2545,11 @@ const tabBar = $('#tabBar');
 const tripsListView = $('#tripsListView');
 const tripDetailView = $('#tripDetailView');
 const timelineView = $('#timelineView');
+const commentBrowserView = $('#commentBrowserView');
 const tripsList = $('#tripsList');
 const tripDetailContent = $('#tripDetailContent');
 const timelineContent = $('#timelineContent');
+const commentBrowserContent = $('#commentBrowserContent');
 const shareBar = $('#shareBar');
 const shareUrl = $('#shareUrl');
 const toastContainer = $('#toastContainer');
@@ -4144,6 +4263,7 @@ function showView(view) {
   tripsListView.classList.remove('active');
   tripDetailView.classList.remove('active');
   timelineView.classList.remove('active');
+  commentBrowserView.classList.remove('active');
 
   if (view === 'list') {
     tripsListView.classList.add('active');
@@ -4169,6 +4289,15 @@ function showView(view) {
     if (state.currentTrip && !state.readOnly) {
       shareBar.style.display = 'block';
     }
+  } else if (view === 'comments') {
+    commentBrowserView.classList.add('active');
+    navBar.classList.add('active');
+    tabBar.classList.add('active');
+    state.currentTab = 'comments';
+    updateTabs();
+    if (state.currentTrip && !state.readOnly) {
+      shareBar.style.display = 'block';
+    }
   }
 }
 
@@ -4188,6 +4317,9 @@ $$('.tab-btn').forEach(btn => {
     } else if (btn.dataset.tab === 'timeline') {
       showView('timeline');
       renderTimeline();
+    } else if (btn.dataset.tab === 'comments') {
+      showView('comments');
+      renderCommentBrowser();
     }
   });
 });
@@ -4320,6 +4452,34 @@ $('#newTripTitle').addEventListener('keydown', (e) => {
 });
 
 // ---------------------------------------------------------------
+// Import trip
+// ---------------------------------------------------------------
+const importTripBtn = $('#importTripBtn');
+const importTripFile = $('#importTripFile');
+if (importTripBtn && importTripFile) {
+  importTripBtn.addEventListener('click', () => importTripFile.click());
+  importTripFile.addEventListener('change', async () => {
+    const file = importTripFile.files[0];
+    if (!file) return;
+    importTripFile.value = '';
+    importTripBtn.disabled = true;
+    importTripBtn.textContent = '⏳ Importing…';
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const trip = await api('POST', '/api/trips/import', fd);
+      toast('Trip imported: ' + (trip.title || 'Untitled'));
+      loadTrip(trip.id);
+    } catch (err) {
+      toast('Import failed: ' + err.message, 'error');
+    } finally {
+      importTripBtn.disabled = false;
+      importTripBtn.textContent = '📥 Import';
+    }
+  });
+}
+
+// ---------------------------------------------------------------
 // Load single trip
 // ---------------------------------------------------------------
 async function loadTrip(id) {
@@ -4338,6 +4498,7 @@ async function loadTrip(id) {
     showView('detail');
     renderTripDetail();
     renderMapData();
+    updateCommentsBadge();
     if (sidebar.classList.contains('open')) {
       // keep open on mobile
     }
@@ -4356,6 +4517,7 @@ async function loadSharedTrip(shareId) {
     showView('detail');
     renderTripDetail();
     renderMapData();
+    updateCommentsBadge();
   } catch (err) {
     toast('Trip not found', 'error');
   }
@@ -4371,6 +4533,7 @@ async function loadPresentTrip(slug) {
     showView('detail');
     renderTripDetail();
     renderMapData();
+    updateCommentsBadge();
     // Auto-start presentation in present-only mode
     setTimeout(() => startPresentation(), 500);
   } catch (err) {
@@ -4413,6 +4576,7 @@ function renderTripDetail() {
   if (photos.length > 0) {
     html += '<button class="btn btn-danger btn-sm edit-only" id="resetTripBtn" style="white-space:nowrap;font-size:11px;padding:4px 10px" title="Delete all photos, stops, and routes">🗑 Start Over</button>';
   }
+  html += '<button class="btn btn-sm edit-only" id="exportTripBtn" style="white-space:nowrap;font-size:11px;padding:4px 10px;background:var(--navy-lighter);color:var(--text)" title="Export trip as backup ZIP">📦 Export</button>';
   html += '</div>';
   html += '</div>';
   if (trip.description) {
@@ -4812,6 +4976,14 @@ function wireDetailEvents() {
       } catch (err) {
         toast(err.message, 'error');
       }
+    });
+  }
+
+  // Export trip button
+  const exportBtn = $('#exportTripBtn');
+  if (exportBtn) {
+    exportBtn.addEventListener('click', () => {
+      window.location.href = '/api/trips/' + trip.id + '/export';
     });
   }
 
@@ -6998,6 +7170,140 @@ function renderTimeline() {
     });
   });
 }
+
+// ---------------------------------------------------------------
+// Comment Browser
+// ---------------------------------------------------------------
+let cbIndex = 0; // current comment index
+
+function updateCommentsBadge() {
+  const tabBtn = $('#commentsTabBtn');
+  if (!tabBtn) return;
+  const comments = getCommentList();
+  tabBtn.textContent = '\uD83D\uDCAC Comments' + (comments.length ? ' (' + comments.length + ')' : '');
+}
+
+function getCommentList() {
+  const trip = state.currentTrip;
+  if (!trip || !trip.comments || !trip.comments.length) return [];
+  // Sort comments by created_at ascending
+  return trip.comments.slice().sort((a, b) => {
+    return (a.created_at || '') < (b.created_at || '') ? -1 : 1;
+  });
+}
+
+function renderCommentBrowser() {
+  const comments = getCommentList();
+  const trip = state.currentTrip;
+  const photos = trip ? (trip.photos || []) : [];
+  const stops = trip ? (trip.stops || []) : [];
+
+  // Update comments tab badge
+  const tabBtn = $('#commentsTabBtn');
+  if (tabBtn) {
+    tabBtn.textContent = '\uD83D\uDCAC Comments' + (comments.length ? ' (' + comments.length + ')' : '');
+  }
+
+  if (comments.length === 0) {
+    commentBrowserContent.innerHTML = '<div class="cb-empty"><div class="cb-empty-icon">\uD83D\uDCAC</div><p>No comments yet</p><p style="margin-top:8px;font-size:12px">Comments left on photos will appear here as a scrollable feed.</p></div>';
+    return;
+  }
+
+  // Clamp index
+  if (cbIndex < 0) cbIndex = 0;
+  if (cbIndex >= comments.length) cbIndex = comments.length - 1;
+
+  const c = comments[cbIndex];
+  const photo = photos.find(p => p.id === c.photo_id);
+  const stop = photo && photo.stop_id ? stops.find(s => s.id === photo.stop_id) : null;
+
+  let html = '<div class="comment-browser">';
+
+  // Header
+  html += '<div class="cb-header">';
+  html += '<h3>\uD83D\uDCAC Comments</h3>';
+  html += '<span class="cb-counter">' + (cbIndex + 1) + ' / ' + comments.length + '</span>';
+  html += '</div>';
+
+  // Photo
+  if (photo) {
+    html += '<div class="cb-photo-container" data-photo-id="' + escapeHtml(photo.id) + '">';
+    if (photo.is_video) {
+      html += '<video src="/uploads/' + escapeHtml(photo.filename) + '" poster="/thumb/' + escapeHtml(photo.filename) + '" muted preload="metadata"></video>';
+    } else {
+      html += '<img src="/thumb/' + escapeHtml(photo.filename) + '" alt="' + escapeHtml(photo.caption || photo.original_name) + '" loading="lazy">';
+    }
+    html += '</div>';
+    if (photo.caption) {
+      html += '<div class="cb-photo-caption">\uD83D\uDCDD ' + escapeHtml(photo.caption) + '</div>';
+    }
+    html += '<div class="cb-photo-meta">';
+    if (photo.taken_at) {
+      const d = new Date(photo.taken_at);
+      html += '<span>\uD83D\uDCC5 ' + d.toLocaleDateString(undefined, {year:"numeric",month:"short",day:"numeric"}) + '</span>';
+    }
+    if (stop) {
+      html += '<span>\uD83D\uDCCD ' + escapeHtml(stop.title || stop.location_name || 'Stop') + '</span>';
+    }
+    html += '</div>';
+  } else {
+    html += '<div class="cb-photo-container" style="padding:30px;text-align:center;color:var(--text-dim)">Photo not found</div>';
+  }
+
+  // Comment card
+  html += '<div class="cb-comment-card">';
+  html += '<div class="cb-comment-author">' + escapeHtml(c.author) + '</div>';
+  html += '<div class="cb-comment-body">' + escapeHtml(c.body) + '</div>';
+  if (c.created_at) {
+    html += '<div class="cb-comment-time">' + formatCommentTime(c.created_at) + '</div>';
+  }
+  html += '</div>';
+
+  // Navigation
+  html += '<div class="cb-nav">';
+  html += '<button id="cbPrev"' + (cbIndex <= 0 ? ' disabled' : '') + '>\u25C0 Previous</button>';
+  html += '<button id="cbNext"' + (cbIndex >= comments.length - 1 ? ' disabled' : '') + '>Next \u25B6</button>';
+  html += '</div>';
+
+  html += '</div>';
+
+  commentBrowserContent.innerHTML = html;
+
+  // Wire events
+  const prevBtn = $('#cbPrev');
+  const nextBtn = $('#cbNext');
+  if (prevBtn) prevBtn.addEventListener('click', () => { cbIndex--; renderCommentBrowser(); });
+  if (nextBtn) nextBtn.addEventListener('click', () => { cbIndex++; renderCommentBrowser(); });
+
+  // Click photo to open modal
+  const photoContainer = commentBrowserContent.querySelector('.cb-photo-container[data-photo-id]');
+  if (photoContainer) {
+    photoContainer.addEventListener('click', () => {
+      openPhotoModal(photoContainer.dataset.photoId);
+    });
+  }
+
+  // Fly to photo on globe
+  if (photo && photo.lat != null && photo.lng != null) {
+    flyToPhoto(photo);
+    highlightPhotoMarker(photo.id);
+  }
+}
+
+// Keyboard nav for comment browser
+document.addEventListener('keydown', (e) => {
+  if (state.currentTab !== 'comments') return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  const comments = getCommentList();
+  if (!comments.length) return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (cbIndex > 0) { cbIndex--; renderCommentBrowser(); }
+  } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (cbIndex < comments.length - 1) { cbIndex++; renderCommentBrowser(); }
+  }
+});
 
 // ---------------------------------------------------------------
 // Share URL copy

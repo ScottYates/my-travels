@@ -11,6 +11,8 @@ A self-hosted travel journal with an interactive 3D globe. Organize trips into s
 - **Google OAuth login** — optional authentication for multi-user setups
 - **SQLite database** — zero-config, file-based storage with auto-migrations
 - **Video support** — upload videos with ffmpeg-generated thumbnails
+- **Backup & restore** — export trips as ZIP archives (metadata + photos) and import them on any instance
+- **Comment browser** — scroll through all comments one at a time with the associated photo and globe fly-to
 - **Structured logging** — all HTTP requests and key operations logged via Go's `slog`
 
 ## Prerequisites
@@ -271,6 +273,83 @@ All data is managed through JSON REST endpoints. Key routes:
 | PUT | `/api/photos/:id` | Update photo metadata |
 | DELETE | `/api/photos/:id` | Delete a photo |
 | POST | `/api/trips/:id/routes` | Add a route between stops |
+| GET | `/api/trips/:id/export` | Download trip as ZIP backup |
+| POST | `/api/trips/import` | Import a trip from a ZIP backup |
+
+## Backup & Restore
+
+Trips can be exported as self-contained ZIP archives and imported on any instance of the app. The export includes all metadata (stops, photos, routes, comments, captions, camera settings) and the actual photo/video files with thumbnails.
+
+### Export a trip
+
+In the trip detail view, click **📦 Export**. This downloads a ZIP file named after the trip title. The ZIP contains:
+
+- `manifest.json` — all trip data (trip, stops, photos, routes, comments) with a version field
+- `files/` — all photo and video files
+- `thumbs/` — all thumbnails
+
+Or via the API:
+
+```bash
+curl -b "session=YOUR_SESSION" \
+  http://localhost:8000/api/trips/TRIP_ID/export \
+  -o my-trip.zip
+```
+
+### Import a trip
+
+On the trips list page, click **📥 Import** and select a previously exported ZIP file.
+
+Or via the API:
+
+```bash
+curl -b "session=YOUR_SESSION" \
+  -F "file=@my-trip.zip" \
+  http://localhost:8000/api/trips/import
+```
+
+The import process:
+
+- Creates a **new trip** with fresh UUIDs (does not overwrite existing data)
+- Remaps all internal references (stop→trip, photo→stop, comment→photo, cover photo)
+- Copies photo/video files to the local `uploads/` directory with new filenames
+- Assigns the importing user as the trip owner
+- Generates a new share ID and clears any presentation slug
+- Preserves all captions, comments, camera settings, photo order, and stop order
+
+### Migrating between instances
+
+1. On the source instance: export each trip you want to migrate
+2. On the destination instance: import each ZIP file
+
+The instances can have completely different file paths, database files, and user accounts. The import handles all path remapping automatically.
+
+### Manifest format
+
+```json
+{
+  "version": 1,
+  "exported_at": "2025-01-01T00:00:00Z",
+  "trip": { ... },
+  "stops": [ ... ],
+  "photos": [ ... ],
+  "routes": [ ... ],
+  "comments": [ ... ]
+}
+```
+
+The `version` field allows future format changes while maintaining backward compatibility.
+
+## Comment Browser
+
+The **💬 Comments** tab (visible in the trip detail sidebar) provides a scrollable feed of all comments on a trip. Each entry shows:
+
+- The photo the comment is attached to (click to open the full photo modal)
+- The photo's caption, date, and stop name
+- The comment author, body, and timestamp
+- **Previous / Next** navigation buttons
+
+Keyboard navigation: use **← →** or **↑ ↓** arrow keys to move between comments. The globe automatically flies to each photo's location as you browse.
 
 ## Troubleshooting
 

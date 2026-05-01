@@ -314,6 +314,8 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/trips/{id}/reset", s.handleResetTrip)
 	mux.HandleFunc("POST /api/trips/{id}/auto-stops", s.handleAutoStops)
 	mux.HandleFunc("POST /api/trips/{id}/resort-photos", s.handleResortPhotos)
+	mux.HandleFunc("GET /api/trips/{id}/export", s.handleExportTrip)
+	mux.HandleFunc("POST /api/trips/import", s.handleImportTrip)
 
 	slog.Info("starting server", "addr", addr)
 	return http.ListenAndServe(addr, requestLogger(mux))
