@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,6 +40,9 @@ type Server struct {
 	TemplatesDir       string
 	GoogleClientID     string
 	GoogleClientSecret string
+
+	chunkedMu      sync.Mutex
+	chunkedUploads map[string]*chunkedUpload
 }
 
 // JSON response helpers
@@ -109,6 +113,7 @@ func New(dbPath, hostname, googleClientID, googleClientSecret, baseDir string) (
 		StaticDir:          staticDir,
 		GoogleClientID:     googleClientID,
 		GoogleClientSecret: googleClientSecret,
+		chunkedUploads:     make(map[string]*chunkedUpload),
 	}
 	if err := srv.setUpDatabase(dbPath); err != nil {
 		return nil, err
@@ -277,6 +282,11 @@ func (s *Server) Serve(addr string) error {
 
 	// Photo CRUD
 	mux.HandleFunc("POST /api/trips/{id}/photos", s.handleUploadPhoto)
+
+	// Chunked upload
+	mux.HandleFunc("POST /api/trips/{id}/uploads/init", s.handleChunkedInit)
+	mux.HandleFunc("POST /api/uploads/{uploadID}/chunk", s.handleChunkedChunk)
+	mux.HandleFunc("POST /api/uploads/{uploadID}/complete", s.handleChunkedComplete)
 	mux.HandleFunc("PUT /api/photos/{id}", s.handleUpdatePhoto)
 	mux.HandleFunc("DELETE /api/photos/{id}", s.handleDeletePhoto)
 
@@ -1384,6 +1394,244 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slog.Info("upload: photo created", "id", id, "filename", filename, "lat", lat, "lng", lng)
+
+	photo, err := q.GetPhoto(r.Context(), id)
+	if err != nil {
+		jsonError(w, "failed to read created photo", http.StatusInternalServerError)
+		return
+	}
+	jsonCreated(w, photo)
+}
+
+// ---------------------------------------------------------------------------
+// Chunked upload: init / chunk / complete
+// ---------------------------------------------------------------------------
+
+type chunkedUpload struct {
+	UploadID    string
+	TripID      string
+	UserID      string
+	FileName    string
+	MimeType    string
+	TotalSize   int64
+	TmpPath     string
+	Received    int64
+	ChunkIndex  int
+	CreatedAt   time.Time
+}
+
+// POST /api/trips/{id}/uploads/init
+// Body: {"file_name": "IMG.jpg", "mime_type": "image/jpeg", "total_size": 12345678}
+func (s *Server) handleChunkedInit(w http.ResponseWriter, r *http.Request) {
+	tripID := r.PathValue("id")
+	_, user, ok := s.requireTripOwner(w, r, tripID)
+	if !ok {
+		return
+	}
+
+	var body struct {
+		FileName  string `json:"file_name"`
+		MimeType  string `json:"mime_type"`
+		TotalSize int64  `json:"total_size"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.FileName == "" {
+		jsonError(w, "file_name is required", http.StatusBadRequest)
+		return
+	}
+
+	uploadID := uuid.New().String()
+	tmpPath := filepath.Join(s.UploadDir, "_chunks_"+uploadID)
+
+	// Create the empty temp file
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		slog.Error("chunked init: create temp file", "error", err, "path", tmpPath)
+		jsonError(w, "failed to create temp file", http.StatusInternalServerError)
+		return
+	}
+	f.Close()
+
+	cu := &chunkedUpload{
+		UploadID:  uploadID,
+		TripID:    tripID,
+		UserID:    user.UserID,
+		FileName:  body.FileName,
+		MimeType:  body.MimeType,
+		TotalSize: body.TotalSize,
+		TmpPath:   tmpPath,
+		CreatedAt: time.Now(),
+	}
+
+	s.chunkedMu.Lock()
+	s.chunkedUploads[uploadID] = cu
+	s.chunkedMu.Unlock()
+
+	slog.Info("chunked upload: init", "upload_id", uploadID, "file_name", body.FileName, "total_size", body.TotalSize, "trip_id", tripID)
+
+	jsonCreated(w, map[string]string{"upload_id": uploadID})
+}
+
+// POST /api/uploads/{uploadID}/chunk
+// Body: raw binary chunk data
+// Headers: Content-Type: application/octet-stream
+func (s *Server) handleChunkedChunk(w http.ResponseWriter, r *http.Request) {
+	uploadID := r.PathValue("uploadID")
+
+	s.chunkedMu.Lock()
+	cu, exists := s.chunkedUploads[uploadID]
+	s.chunkedMu.Unlock()
+
+	if !exists {
+		jsonError(w, "upload not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify the user owns this upload
+	user := s.getUser(r)
+	if user == nil || user.UserID != cu.UserID {
+		jsonError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Append chunk to temp file
+	f, err := os.OpenFile(cu.TmpPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		slog.Error("chunked chunk: open temp file", "error", err, "upload_id", uploadID)
+		jsonError(w, "failed to write chunk", http.StatusInternalServerError)
+		return
+	}
+
+	n, err := io.Copy(f, r.Body)
+	f.Close()
+	if err != nil {
+		slog.Error("chunked chunk: write", "error", err, "upload_id", uploadID)
+		jsonError(w, "failed to write chunk", http.StatusInternalServerError)
+		return
+	}
+
+	s.chunkedMu.Lock()
+	cu.Received += n
+	cu.ChunkIndex++
+	chunkIdx := cu.ChunkIndex
+	received := cu.Received
+	s.chunkedMu.Unlock()
+
+	slog.Info("chunked upload: chunk received", "upload_id", uploadID, "chunk", chunkIdx, "chunk_bytes", n, "total_received", received)
+
+	jsonOK(w, map[string]any{"chunk": chunkIdx, "received": received})
+}
+
+// POST /api/uploads/{uploadID}/complete
+// Finalizes the upload: processes the assembled file exactly like a single upload.
+func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
+	uploadID := r.PathValue("uploadID")
+
+	s.chunkedMu.Lock()
+	cu, exists := s.chunkedUploads[uploadID]
+	if exists {
+		delete(s.chunkedUploads, uploadID)
+	}
+	s.chunkedMu.Unlock()
+
+	if !exists {
+		jsonError(w, "upload not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify the user owns this upload
+	user := s.getUser(r)
+	if user == nil || user.UserID != cu.UserID {
+		jsonError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Read the assembled file
+	fileData, err := os.ReadFile(cu.TmpPath)
+	os.Remove(cu.TmpPath)
+	if err != nil {
+		slog.Error("chunked complete: read assembled file", "error", err, "upload_id", uploadID)
+		jsonError(w, "failed to read assembled file", http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("chunked upload: completing", "upload_id", uploadID, "file_name", cu.FileName, "bytes", len(fileData))
+
+	// Generate final filename
+	ext := strings.ToLower(filepath.Ext(cu.FileName))
+	if ext == "" {
+		ext = ".jpg"
+	}
+	filename := uuid.New().String() + ext
+
+	videoUpload := isVideoFile(cu.FileName) || isVideoMIME(cu.MimeType)
+
+	// Save to upload dir
+	dstPath := filepath.Join(s.UploadDir, filename)
+	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil {
+		slog.Error("chunked complete: write final file", "error", err, "path", dstPath)
+		jsonError(w, "failed to save file", http.StatusInternalServerError)
+		return
+	}
+
+	var exifLat, exifLng *float64
+	var exifTime *time.Time
+	var imgW, imgH int
+
+	if videoUpload {
+		imgW, imgH = videoDimensions(dstPath)
+		if thumbData, err := videoThumbnail(dstPath, 128); err == nil {
+			thumbDir := filepath.Join(s.UploadDir, "thumbs")
+			os.MkdirAll(thumbDir, 0755)
+			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644)
+		}
+	} else {
+		exifLat, exifLng, exifTime = extractEXIF(fileData)
+		imgW, imgH = imageDimensions(fileData)
+	}
+
+	var lat, lng *float64
+	lat = exifLat
+	lng = exifLng
+
+	var takenAt *time.Time
+	if exifTime != nil {
+		takenAt = exifTime
+	}
+
+	var isVideo int64
+	if videoUpload {
+		isVideo = 1
+	}
+
+	id := uuid.New().String()
+	now := time.Now()
+	q := dbgen.New(s.DB)
+
+	if err := q.CreatePhoto(r.Context(), dbgen.CreatePhotoParams{
+		ID:           id,
+		TripID:       cu.TripID,
+		Filename:     filename,
+		OriginalName: cu.FileName,
+		Lat:          lat,
+		Lng:          lng,
+		TakenAt:      takenAt,
+		Width:        int64(imgW),
+		Height:       int64(imgH),
+		SizeBytes:    int64(len(fileData)),
+		CreatedAt:    now,
+		IsVideo:      isVideo,
+	}); err != nil {
+		slog.Error("chunked complete: create photo record", "error", err, "filename", filename)
+		os.Remove(dstPath)
+		jsonError(w, "failed to create photo record", http.StatusInternalServerError)
+		return
+	}
+
+	slog.Info("chunked upload: photo created", "id", id, "filename", filename, "lat", lat, "lng", lng)
 
 	photo, err := q.GetPhoto(r.Context(), id)
 	if err != nil {
