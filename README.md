@@ -40,6 +40,8 @@ my-travels/
 │   └── sqlc.yaml            # sqlc configuration
 ├── uploads/                 # User-uploaded photos/videos (gitignored)
 ├── db.sqlite3               # SQLite database file (gitignored, created on first run)
+├── .env.example             # Example configuration file
+├── .env                     # Your local configuration (gitignored)
 ├── srv.service              # systemd unit file
 ├── Makefile                 # Build targets
 └── go.mod / go.sum          # Go module files
@@ -72,38 +74,55 @@ This produces a `./my-travels` binary in the repo root. To build to a custom pat
 make build OUT=/usr/local/bin/my-travels
 ```
 
-### 4. Run
+### 4. Configure
 
-Run from the repo root so the server can find `srv/templates/` and `srv/static/`:
+Copy the example config and edit it:
+
+```bash
+cp .env.example .env
+```
+
+All configuration is via environment variables, loaded from a `.env` file in the working directory. Environment variables set in the shell override values in `.env`.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LISTEN` | `:8000` | Address and port to listen on |
+| `BASE_DIR` | *(directory of executable)* | Project root containing `srv/templates/`, `srv/static/`, and `uploads/` |
+| `GOOGLE_CLIENT_ID` | *(empty)* | Google OAuth client ID (optional) |
+| `GOOGLE_CLIENT_SECRET` | *(empty)* | Google OAuth client secret (optional) |
+
+Example `.env`:
+
+```bash
+LISTEN=:8000
+BASE_DIR=/path/to/my-travels
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
+```
+
+### 5. Run
 
 ```bash
 ./my-travels
 ```
 
-The server starts on port **8000** by default. Open http://localhost:8000.
+The server reads `.env` from the working directory and starts up. On first run it will:
 
-On first run it will:
 - Create `db.sqlite3` in the working directory
 - Apply all database migrations automatically
 - Create the `uploads/` directory for photo storage
 
-To use a different port:
-
-```bash
-./my-travels -listen :3000
-```
+Open http://localhost:8000 (or whatever port you configured).
 
 #### Running the binary from a different location
 
-If the binary is not in the repo root (e.g. installed to `/usr/local/bin`), tell it where to find the source tree:
+If the binary is not in the repo root (e.g. installed to `/usr/local/bin`), set `BASE_DIR` in your `.env` or environment to point at the repo root:
 
 ```bash
-my-travels -base-dir /path/to/my-travels
+BASE_DIR=/path/to/my-travels my-travels
 ```
 
-The `-base-dir` flag sets the root directory for finding `srv/templates/`, `srv/static/`, and `uploads/`. It defaults to the directory containing the executable.
-
-### 5. (Optional) Configure Google OAuth
+### 6. (Optional) Configure Google OAuth
 
 Google OAuth lets users log in and own their trips. Without it, the app still runs but has no authentication.
 
@@ -120,24 +139,14 @@ Google OAuth lets users log in and own their trips. Without it, the app still ru
 
 > The redirect URI must exactly match your deployment URL. The app builds it dynamically from the request origin + `/auth/google/callback`.
 
-#### b. Set environment variables
-
-Export before starting the server:
+#### b. Set in `.env`
 
 ```bash
-export GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
-export GOOGLE_CLIENT_SECRET="GOCSPX-your-secret"
-./my-travels
-```
-
-Or create a `.env` file for use with the systemd service (see below):
-
-```
 GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-your-secret
 ```
 
-### 6. (Optional) Install ffmpeg for video support
+### 7. (Optional) Install ffmpeg for video support
 
 Video uploads require `ffmpeg` and `ffprobe` for thumbnail generation:
 
@@ -156,13 +165,14 @@ The included `srv.service` file runs the server as a systemd service. Edit it to
 ### Install and start
 
 ```bash
-# Edit srv.service: set WorkingDirectory, ExecStart path, and -base-dir
+# Edit srv.service: set WorkingDirectory and ExecStart path
+# Create .env in the WorkingDirectory with your configuration
 sudo cp srv.service /etc/systemd/system/srv.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now srv
 ```
 
-The service reads environment variables from `~/.env` (via `EnvironmentFile`).
+The systemd unit loads environment variables from `~/.env` via `EnvironmentFile`. The application also reads `.env` from its working directory. Either or both can be used.
 
 ### Restart after code changes
 
@@ -266,12 +276,12 @@ All data is managed through JSON REST endpoints. Key routes:
 
 ### Uploads fail on a new install
 
-The most common cause is a **wrong base directory**. The server resolves `uploads/` relative to `-base-dir` (default: the executable's directory). If the binary is somewhere else, it may try to write to a directory it can't access.
+The most common cause is a **wrong base directory**. The server resolves `uploads/` relative to `BASE_DIR` (default: the executable's directory). If the binary is somewhere else, it may try to write to a directory it can't access.
 
-**Fix:** Pass `-base-dir` pointing at the repo root:
+**Fix:** Set `BASE_DIR` in your `.env` or environment to point at the repo root:
 
 ```bash
-./my-travels -base-dir /path/to/my-travels
+BASE_DIR=/path/to/my-travels
 ```
 
 Check the startup log to verify paths:
@@ -285,7 +295,7 @@ INFO server init base_dir=... upload_dir=... templates_dir=... static_dir=...
 Same root cause — the server looks for `srv/templates/` inside the base directory. If the directory doesn't exist, the server exits immediately with a clear error:
 
 ```
-templates directory not found at /some/path/srv/templates — set -base-dir to the project root
+templates directory not found at /some/path/srv/templates — set BASE_DIR to the project root
 ```
 
 ### Google OAuth not working
