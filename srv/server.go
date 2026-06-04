@@ -186,7 +186,35 @@ type authUser struct {
 
 const sessionCookieName = "session"
 
+const impersonateCookieName = "impersonate"
+
 func (s *Server) getUser(r *http.Request) *authUser {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
+		return nil
+	}
+	q := dbgen.New(s.DB)
+	sess, err := q.GetSession(r.Context(), c.Value)
+	if err != nil {
+		return nil
+	}
+
+	// If the real user is admin and has an impersonation cookie, act as that user.
+	if sess.Email == adminEmail {
+		if ic, err := r.Cookie(impersonateCookieName); err == nil && ic.Value != "" {
+			// ic.Value is "userID:email"
+			parts := strings.SplitN(ic.Value, ":", 2)
+			if len(parts) == 2 {
+				return &authUser{UserID: parts[0], Email: parts[1]}
+			}
+		}
+	}
+
+	return &authUser{UserID: sess.UserID, Email: sess.Email}
+}
+
+// getRealUser returns the actual authenticated user, ignoring impersonation.
+func (s *Server) getRealUser(r *http.Request) *authUser {
 	c, err := r.Cookie(sessionCookieName)
 	if err != nil || c.Value == "" {
 		return nil
@@ -368,6 +396,8 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/admin/sessions", s.handleAdminSessions)
 	mux.HandleFunc("GET /api/admin/db-stats", s.handleAdminDBStats)
 	mux.HandleFunc("GET /api/admin/system", s.handleAdminSystem)
+	mux.HandleFunc("POST /api/admin/impersonate", s.handleAdminImpersonate)
+	mux.HandleFunc("POST /api/admin/stop-impersonate", s.handleAdminStopImpersonate)
 
 	slog.Info("starting server", "addr", addr)
 	var handler http.Handler = mux
@@ -439,11 +469,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	// Build auth JSON for injection into the SPA
 	authInfo := map[string]any{"authenticated": false}
 	u := s.getUser(r)
+	realUser := s.getRealUser(r)
 	if u != nil {
+		isImpersonating := realUser != nil && realUser.Email != u.Email
 		authInfo = map[string]any{
-			"authenticated": true,
-			"user_id":       u.UserID,
-			"email":         u.Email,
+			"authenticated":  true,
+			"user_id":        u.UserID,
+			"email":          u.Email,
+			"is_admin":       realUser != nil && realUser.Email == adminEmail,
+			"impersonating":  isImpersonating,
+			"real_email":     func() string { if realUser != nil { return realUser.Email }; return "" }(),
 		}
 	}
 	authJSON, _ := json.Marshal(authInfo)
@@ -466,11 +501,19 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		jsonOK(w, map[string]any{"authenticated": false})
 		return
 	}
-	jsonOK(w, map[string]any{
+	realUser := s.getRealUser(r)
+	isImpersonating := realUser != nil && realUser.Email != u.Email
+	result := map[string]any{
 		"authenticated": true,
 		"user_id":       u.UserID,
 		"email":         u.Email,
-	})
+		"is_admin":      realUser != nil && realUser.Email == adminEmail,
+		"impersonating": isImpersonating,
+	}
+	if isImpersonating {
+		result["real_email"] = realUser.Email
+	}
+	jsonOK(w, result)
 }
 
 // getPublicOrigin returns the public-facing origin (scheme + host) from proxy headers.

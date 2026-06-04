@@ -2488,6 +2488,9 @@ body.no-auth .readonly-badge { display: none !important; }
 const __authInfo = {{ .AuthJSON }};
 const GOOGLE_CLIENT_ID = '{{ .GoogleClientID }}';
 let currentUser = __authInfo.authenticated ? { userId: __authInfo.user_id, email: __authInfo.email } : null;
+const IS_ADMIN = __authInfo.is_admin === true;
+const IS_IMPERSONATING = __authInfo.impersonating === true;
+const REAL_EMAIL = __authInfo.real_email || '';
 
 // ---------------------------------------------------------------
 // State
@@ -2610,11 +2613,27 @@ function renderUserInfo() {
   if (state.readOnly || state.presentOnly) return;
   if (currentUser) {
     const initials = (currentUser.email || '?').substring(0, 1).toUpperCase();
-    userInfoEl.innerHTML =
-      '<div class="user-avatar">' + initials + '</div>' +
-      '<span class="user-email" title="' + currentUser.email + '">' + currentUser.email + '</span>' +
-      '<button type="button" class="logout-btn" id="logoutBtn" title="Log out">Logout</button>';
+    let html = '<div class="user-avatar">' + initials + '</div>' +
+      '<span class="user-email" title="' + currentUser.email + '">' + currentUser.email + '</span>';
+    if (IS_ADMIN) {
+      html += '<a href="/admin" class="logout-btn" style="color:var(--accent);" title="Admin Panel">🛠 Admin</a>';
+    }
+    html += '<button type="button" class="logout-btn" id="logoutBtn" title="Log out">Logout</button>';
+    userInfoEl.innerHTML = html;
     document.getElementById('logoutBtn').addEventListener('click', handleLogout);
+
+    // Show impersonation banner
+    if (IS_IMPERSONATING) {
+      let banner = document.getElementById('impersonateBanner');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'impersonateBanner';
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#f59e0b;color:#000;text-align:center;padding:6px 16px;font-size:13px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:12px;';
+        document.body.prepend(banner);
+      }
+      banner.innerHTML = '⚠️ Viewing as <strong>' + escapeHtml(currentUser.email) + '</strong> (admin: ' + escapeHtml(REAL_EMAIL) + ')' +
+        '<button onclick="stopImpersonating()" style="background:#000;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;">Stop Impersonating</button>';
+    }
   } else if (GOOGLE_CLIENT_ID) {
     userInfoEl.innerHTML =
       '<a href="/auth/google/login" class="login-btn" style="padding:6px 14px;font-size:12px">' +
@@ -2623,6 +2642,15 @@ function renderUserInfo() {
       '</a>';
   } else {
     userInfoEl.innerHTML = '<span style="color:var(--text-dim);font-size:12px">Auth not configured</span>';
+  }
+}
+
+async function stopImpersonating() {
+  try {
+    await fetch('/api/admin/stop-impersonate', { method: 'POST' });
+    window.location.reload();
+  } catch (err) {
+    alert('Failed to stop impersonating: ' + err.message);
   }
 }
 

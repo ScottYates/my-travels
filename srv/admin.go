@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,9 +18,9 @@ import (
 
 const adminEmail = "beernutz@gmail.com"
 
-// isAdmin returns true if the current user is the admin.
+// isAdmin returns true if the real (non-impersonated) user is the admin.
 func (s *Server) isAdmin(r *http.Request) bool {
-	u := s.getUser(r)
+	u := s.getRealUser(r)
 	return u != nil && u.Email == adminEmail
 }
 
@@ -593,6 +594,61 @@ func (s *Server) handleAdminSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonOK(w, sessions)
+}
+
+// ---------------------------------------------------------------------------
+// Admin API: Impersonate user
+// ---------------------------------------------------------------------------
+
+func (s *Server) handleAdminImpersonate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+
+	var body struct {
+		UserID string `json:"user_id"`
+		Email  string `json:"email"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.UserID == "" || body.Email == "" {
+		jsonError(w, "user_id and email are required", http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("admin impersonate", "admin", adminEmail, "target_email", body.Email, "target_user_id", body.UserID)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     impersonateCookieName,
+		Value:    body.UserID + ":" + body.Email,
+		Path:     "/",
+		MaxAge:   3600, // 1 hour
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	jsonOK(w, map[string]any{"ok": true, "impersonating": body.Email})
+}
+
+func (s *Server) handleAdminStopImpersonate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
+
+	slog.Info("admin stop impersonation", "admin", adminEmail)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     impersonateCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	jsonOK(w, map[string]any{"ok": true})
 }
 
 // ---------------------------------------------------------------------------

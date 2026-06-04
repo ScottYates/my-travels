@@ -321,6 +321,7 @@ tbody tr:hover {
 <body>
 
 <div class="admin-layout">
+  <div id="impersonateBanner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:9999;background:#f59e0b;color:#000;text-align:center;padding:6px 16px;font-size:13px;font-weight:600;align-items:center;justify-content:center;gap:12px;"></div>
   <nav class="sidebar">
     <h1>🛠 Admin</h1>
     <a href="#overview" class="active" data-panel="overview">📊 Overview</a>
@@ -546,6 +547,7 @@ async function loadUsers() {
               <span><strong>${u.trip_count}</strong> trips</span>
               <span><strong>${u.photo_count}</strong> photos</span>
               <span><strong>${u.stop_count}</strong> stops</span>
+              <button class="btn btn-sm" onclick="impersonateUser('${escAttr(u.user_id)}', '${escAttr(u.email)}')">🔑 Login as</button>
             </div>
           </div>
           ${u.trips && u.trips.length ? `
@@ -725,12 +727,42 @@ async function loadSessions() {
   }
 }
 
+// Impersonate
+async function impersonateUser(userId, email) {
+  if (!confirm(`Login as ${email}?\n\nYou'll see the app as this user. Click "Stop Impersonating" to return.`)) return;
+  try {
+    const res = await fetch(API + '/impersonate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, email: email })
+    });
+    if (!res.ok) throw new Error('Failed');
+    window.location.href = '/';
+  } catch(e) {
+    alert('Impersonation failed: ' + e.message);
+  }
+}
+
+async function stopImpersonatingAdmin() {
+  try {
+    await fetch(API + '/stop-impersonate', { method: 'POST' });
+    window.location.reload();
+  } catch(e) {
+    alert('Failed: ' + e.message);
+  }
+}
+
 // Utils
 function escHtml(s) {
   if (!s) return '';
   const div = document.createElement('div');
   div.textContent = s;
   return div.innerHTML;
+}
+
+function escAttr(s) {
+  if (!s) return '';
+  return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
 function fmtTime(t) {
@@ -749,7 +781,24 @@ function fmtDate(t) {
   } catch { return t; }
 }
 
+// Check impersonation status
+async function checkImpersonation() {
+  try {
+    const res = await fetch('/api/me');
+    const me = await res.json();
+    if (me.authenticated && me.impersonating) {
+      const banner = document.getElementById('impersonateBanner');
+      banner.style.display = 'flex';
+      banner.innerHTML = `⚠️ Viewing as <strong>${escHtml(me.email)}</strong>
+        <button onclick="stopImpersonatingAdmin()" style="background:#000;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;">Stop Impersonating</button>`;
+      document.querySelector('.sidebar').style.paddingTop = '36px';
+      document.querySelector('.main').style.paddingTop = '56px';
+    }
+  } catch(e) {}
+}
+
 // Init
+checkImpersonation();
 initPanel();
 </script>
 </body>
