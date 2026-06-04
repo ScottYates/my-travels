@@ -43,6 +43,8 @@ type Server struct {
 
 	chunkedMu      sync.Mutex
 	chunkedUploads map[string]*chunkedUpload
+
+	redirects map[string]string // path → target URL
 }
 
 // JSON response helpers
@@ -114,11 +116,51 @@ func New(dbPath, hostname, googleClientID, googleClientSecret, baseDir string) (
 		GoogleClientID:     googleClientID,
 		GoogleClientSecret: googleClientSecret,
 		chunkedUploads:     make(map[string]*chunkedUpload),
+		redirects:         loadRedirects(baseDir),
 	}
 	if err := srv.setUpDatabase(dbPath); err != nil {
 		return nil, err
 	}
 	return srv, nil
+}
+
+// loadRedirects reads an optional redirects.json from baseDir.
+// The file maps URL paths to target URLs for timed redirects.
+func loadRedirects(baseDir string) map[string]string {
+	p := filepath.Join(baseDir, "redirects.json")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		slog.Warn("failed to parse redirects.json", "err", err)
+		return nil
+	}
+	if len(m) > 0 {
+		slog.Info("loaded redirects", "count", len(m))
+	}
+	return m
+}
+
+// redirectMiddleware checks incoming requests against the redirects map
+// and serves a timed redirect page if matched.
+func (s *Server) redirectMiddleware(next http.Handler) http.Handler {
+	tmpl := template.Must(template.ParseFiles(filepath.Join(s.TemplatesDir, "redirect.html")))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if target, ok := s.redirects[r.URL.Path]; ok {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			tmpl.Execute(w, struct {
+				Target   string
+				TargetJS template.JS
+			}{
+				Target:   target,
+				TargetJS: template.JS(fmt.Sprintf("%q", target)),
+			})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) setUpDatabase(dbPath string) error {
@@ -318,7 +360,11 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/trips/import", s.handleImportTrip)
 
 	slog.Info("starting server", "addr", addr)
-	return http.ListenAndServe(addr, requestLogger(mux))
+	var handler http.Handler = mux
+	if len(s.redirects) > 0 {
+		handler = s.redirectMiddleware(handler)
+	}
+	return http.ListenAndServe(addr, requestLogger(handler))
 }
 
 // ---------------------------------------------------------------------------
