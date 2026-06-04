@@ -359,6 +359,16 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("GET /api/trips/{id}/export", s.handleExportTrip)
 	mux.HandleFunc("POST /api/trips/import", s.handleImportTrip)
 
+	// Admin
+	mux.HandleFunc("GET /admin", s.handleAdminPage)
+	mux.HandleFunc("GET /api/admin/logs", s.handleAdminLogs)
+	mux.HandleFunc("GET /api/admin/users", s.handleAdminUsers)
+	mux.HandleFunc("GET /api/admin/uploads", s.handleAdminUploads)
+	mux.HandleFunc("GET /api/admin/upload-issues", s.handleAdminUploadIssues)
+	mux.HandleFunc("GET /api/admin/sessions", s.handleAdminSessions)
+	mux.HandleFunc("GET /api/admin/db-stats", s.handleAdminDBStats)
+	mux.HandleFunc("GET /api/admin/system", s.handleAdminSystem)
+
 	slog.Info("starting server", "addr", addr)
 	var handler http.Handler = mux
 	if len(s.redirects) > 0 {

@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — My Travels</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #232733;
+  --border: #2d3140;
+  --text: #e4e6ed;
+  --text2: #8b8fa3;
+  --accent: #5b8af5;
+  --accent2: #3d6ce0;
+  --error: #ef4444;
+  --warn: #f59e0b;
+  --success: #22c55e;
+  --info: #3b82f6;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+/* Layout */
+.admin-layout {
+  display: flex;
+  min-height: 100vh;
+}
+.sidebar {
+  width: 220px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 20px 0;
+  flex-shrink: 0;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  overflow-y: auto;
+}
+.sidebar h1 {
+  font-size: 16px;
+  padding: 0 20px 16px;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.sidebar a {
+  display: block;
+  padding: 10px 20px;
+  color: var(--text2);
+  text-decoration: none;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+.sidebar a:hover, .sidebar a.active {
+  background: var(--surface2);
+  color: var(--text);
+}
+.sidebar a.active {
+  border-left: 3px solid var(--accent);
+  padding-left: 17px;
+}
+.sidebar .back-link {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  margin-top: 20px;
+}
+.main {
+  margin-left: 220px;
+  flex: 1;
+  padding: 24px 32px;
+  max-width: 1200px;
+}
+
+/* Panels */
+.panel {
+  display: none;
+}
+.panel.active {
+  display: block;
+}
+.panel h2 {
+  font-size: 22px;
+  margin-bottom: 16px;
+  font-weight: 600;
+}
+.panel h3 {
+  font-size: 16px;
+  margin: 20px 0 10px;
+  color: var(--text2);
+  font-weight: 500;
+}
+
+/* Cards / Stats */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+}
+.stat-card .value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--accent);
+}
+.stat-card .label {
+  font-size: 12px;
+  color: var(--text2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-bottom: 20px;
+}
+th, td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  background: var(--surface);
+  color: var(--text2);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  position: sticky;
+  top: 0;
+}
+tbody tr:hover {
+  background: var(--surface);
+}
+
+/* Logs */
+.log-controls {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.log-controls select, .log-controls input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.log-controls input {
+  flex: 1;
+  min-width: 200px;
+}
+.log-entry {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  line-height: 1.6;
+  word-break: break-all;
+}
+.log-entry:hover {
+  background: var(--surface);
+}
+.log-entry .time {
+  color: var(--text2);
+}
+.log-entry .level-INFO {
+  color: var(--info);
+  font-weight: 600;
+}
+.log-entry .level-WARN {
+  color: var(--warn);
+  font-weight: 600;
+}
+.log-entry .level-ERROR {
+  color: var(--error);
+  font-weight: 600;
+}
+.log-entry .msg {
+  color: var(--text);
+}
+.log-container {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-error { background: rgba(239,68,68,0.15); color: var(--error); }
+.badge-warn  { background: rgba(245,158,11,0.15); color: var(--warn); }
+.badge-ok    { background: rgba(34,197,94,0.15); color: var(--success); }
+.badge-info  { background: rgba(59,130,246,0.15); color: var(--info); }
+
+/* User cards */
+.user-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+  margin-bottom: 16px;
+}
+.user-card .user-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.user-card .user-email {
+  font-size: 16px;
+  font-weight: 600;
+}
+.user-card .user-stats {
+  display: flex;
+  gap: 16px;
+}
+.user-card .user-stats span {
+  font-size: 13px;
+  color: var(--text2);
+}
+.user-card .user-stats strong {
+  color: var(--text);
+}
+
+/* Issue cards */
+.issue-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--error);
+  border-radius: 0 10px 10px 0;
+  padding: 14px 18px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.issue-card .issue-type {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.issue-card .issue-detail {
+  color: var(--text2);
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* Loading */
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: var(--text2);
+}
+.spinner {
+  display: inline-block;
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Empty state */
+.empty {
+  text-align: center;
+  padding: 40px;
+  color: var(--text2);
+  font-size: 14px;
+}
+
+/* Refresh button */
+.btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn:hover {
+  background: var(--accent2);
+}
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+</style>
+</head>
+<body>
+
+<div class="admin-layout">
+  <nav class="sidebar">
+    <h1>🛠 Admin</h1>
+    <a href="#overview" class="active" data-panel="overview">📊 Overview</a>
+    <a href="#logs" data-panel="logs">📋 Logs</a>
+    <a href="#users" data-panel="users">👥 Users & Trips</a>
+    <a href="#uploads" data-panel="uploads">📁 Uploads</a>
+    <a href="#issues" data-panel="issues">⚠️ Upload Issues</a>
+    <a href="#sessions" data-panel="sessions">🔑 Sessions</a>
+    <div class="back-link">
+      <a href="/">← Back to App</a>
+    </div>
+  </nav>
+
+  <div class="main">
+
+    <!-- Overview Panel -->
+    <div id="overview" class="panel active">
+      <h2>Overview</h2>
+      <div id="system-info" class="loading"><div class="spinner"></div></div>
+      <div id="db-stats" class="stat-grid"></div>
+    </div>
+
+    <!-- Logs Panel -->
+    <div id="logs" class="panel">
+      <h2>Server Logs</h2>
+      <div class="log-controls">
+        <select id="log-date"></select>
+        <select id="log-level">
+          <option value="">All Levels</option>
+          <option value="INFO">INFO</option>
+          <option value="WARN">WARN</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <input type="text" id="log-search" placeholder="Search logs...">
+        <button class="btn btn-sm" onclick="loadLogs()">🔄 Refresh</button>
+      </div>
+      <div id="log-count" style="font-size:13px;color:var(--text2);margin-bottom:8px;"></div>
+      <div id="log-container" class="log-container"></div>
+    </div>
+
+    <!-- Users Panel -->
+    <div id="users" class="panel">
+      <h2>Users & Trips</h2>
+      <div id="users-container" class="loading"><div class="spinner"></div></div>
+    </div>
+
+    <!-- Uploads Panel -->
+    <div id="uploads" class="panel">
+      <h2>Upload Statistics</h2>
+      <div id="uploads-stats" class="loading"><div class="spinner"></div></div>
+    </div>
+
+    <!-- Issues Panel -->
+    <div id="issues" class="panel">
+      <h2>Upload Issues</h2>
+      <div id="issues-container" class="loading"><div class="spinner"></div></div>
+    </div>
+
+    <!-- Sessions Panel -->
+    <div id="sessions" class="panel">
+      <h2>Sessions</h2>
+      <div id="sessions-container" class="loading"><div class="spinner"></div></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const API = '/api/admin';
+
+// Navigation
+document.querySelectorAll('.sidebar a[data-panel]').forEach(link => {
+  link.addEventListener('click', e => {
+    e.preventDefault();
+    const panel = link.dataset.panel;
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.sidebar a').forEach(a => a.classList.remove('active'));
+    document.getElementById(panel).classList.add('active');
+    link.classList.add('active');
+    window.location.hash = panel;
+    loadPanel(panel);
+  });
+});
+
+// Load panel on hash change
+function initPanel() {
+  const hash = window.location.hash.replace('#', '') || 'overview';
+  const link = document.querySelector(`[data-panel="${hash}"]`);
+  if (link) link.click();
+  else loadPanel('overview');
+}
+
+const loaded = {};
+function loadPanel(panel) {
+  switch(panel) {
+    case 'overview': loadOverview(); break;
+    case 'logs': if (!loaded.logs) loadLogs(); break;
+    case 'users': loadUsers(); break;
+    case 'uploads': loadUploads(); break;
+    case 'issues': loadIssues(); break;
+    case 'sessions': loadSessions(); break;
+  }
+}
+
+async function apiFetch(path) {
+  const res = await fetch(API + path);
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
+// Overview
+async function loadOverview() {
+  try {
+    const [sys, db] = await Promise.all([
+      apiFetch('/system'),
+      apiFetch('/db-stats')
+    ]);
+
+    document.getElementById('system-info').innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-card"><div class="value">${sys.hostname}</div><div class="label">Hostname</div></div>
+        <div class="stat-card"><div class="value">${sys.uptime || 'N/A'}</div><div class="label">Uptime</div></div>
+        <div class="stat-card"><div class="value">${db.db_size_human}</div><div class="label">DB Size</div></div>
+      </div>
+    `;
+
+    document.getElementById('db-stats').innerHTML = `
+      <div class="stat-card"><div class="value">${db.trips}</div><div class="label">Trips</div></div>
+      <div class="stat-card"><div class="value">${db.stops}</div><div class="label">Stops</div></div>
+      <div class="stat-card"><div class="value">${db.photos}</div><div class="label">Photos</div></div>
+      <div class="stat-card"><div class="value">${db.videos}</div><div class="label">Videos</div></div>
+      <div class="stat-card"><div class="value">${db.comments}</div><div class="label">Comments</div></div>
+      <div class="stat-card"><div class="value">${db.routes}</div><div class="label">Routes</div></div>
+      <div class="stat-card"><div class="value">${db.sessions}</div><div class="label">Sessions</div></div>
+      <div class="stat-card"><div class="value">${db.visitors}</div><div class="label">Visitors</div></div>
+    `;
+  } catch(e) {
+    document.getElementById('system-info').innerHTML = `<div class="empty">Error loading: ${e.message}</div>`;
+  }
+}
+
+// Logs
+async function loadLogs() {
+  const dateSelect = document.getElementById('log-date');
+  const level = document.getElementById('log-level').value;
+  const search = document.getElementById('log-search').value;
+  const date = dateSelect.value;
+
+  const params = new URLSearchParams();
+  if (date) params.set('date', date);
+  if (level) params.set('level', level);
+  if (search) params.set('search', search);
+  params.set('limit', '500');
+
+  try {
+    const data = await apiFetch('/logs?' + params);
+    loaded.logs = true;
+
+    // Populate date dropdown (only if empty)
+    if (dateSelect.options.length <= 1) {
+      dateSelect.innerHTML = '';
+      (data.files || []).forEach(f => {
+        const d = f.replace('.log', '');
+        const opt = document.createElement('option');
+        opt.value = d;
+        opt.textContent = d;
+        if (d === data.date) opt.selected = true;
+        dateSelect.appendChild(opt);
+      });
+    }
+
+    document.getElementById('log-count').textContent = `Showing ${data.entries?.length || 0} entries`;
+
+    const container = document.getElementById('log-container');
+    if (!data.entries || data.entries.length === 0) {
+      container.innerHTML = '<div class="empty">No log entries found</div>';
+      return;
+    }
+
+    container.innerHTML = data.entries.map(e => `
+      <div class="log-entry">
+        <span class="time">${fmtTime(e.time)}</span>
+        <span class="level-${e.level}">${e.level}</span>
+        <span class="msg">${escHtml(e.msg)}</span>
+        <span class="detail" style="color:var(--text2)">${escHtml(stripParsed(e.raw, e.time, e.level, e.msg))}</span>
+      </div>
+    `).join('');
+  } catch(e) {
+    document.getElementById('log-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+// Debounced log search
+let logTimer;
+document.getElementById('log-search').addEventListener('input', () => {
+  clearTimeout(logTimer);
+  logTimer = setTimeout(loadLogs, 300);
+});
+document.getElementById('log-level').addEventListener('change', loadLogs);
+document.getElementById('log-date').addEventListener('change', () => { loaded.logs = false; loadLogs(); });
+
+function stripParsed(raw, time, level, msg) {
+  let s = raw;
+  if (time) s = s.replace('time=' + time, '');
+  if (level) s = s.replace('level=' + level, '');
+  if (msg) s = s.replace('msg="' + msg + '"', '').replace('msg=' + msg, '');
+  return s.trim();
+}
+
+// Users
+async function loadUsers() {
+  try {
+    const data = await apiFetch('/users');
+    const container = document.getElementById('users-container');
+
+    let html = '';
+    (data.users || []).forEach(u => {
+      html += `
+        <div class="user-card">
+          <div class="user-header">
+            <span class="user-email">${escHtml(u.email)}</span>
+            <div class="user-stats">
+              <span><strong>${u.trip_count}</strong> trips</span>
+              <span><strong>${u.photo_count}</strong> photos</span>
+              <span><strong>${u.stop_count}</strong> stops</span>
+            </div>
+          </div>
+          ${u.trips && u.trips.length ? `
+          <table>
+            <thead><tr><th>Title</th><th>Stops</th><th>Photos</th><th>Videos</th><th>Updated</th><th>Share ID</th></tr></thead>
+            <tbody>
+              ${u.trips.map(t => `
+                <tr>
+                  <td><strong>${escHtml(t.title)}</strong></td>
+                  <td>${t.stop_count}</td>
+                  <td>${t.photo_count}</td>
+                  <td>${t.video_count}</td>
+                  <td>${fmtDate(t.updated_at)}</td>
+                  <td style="font-family:monospace;font-size:11px">${t.share_id.substring(0,8)}...</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>` : '<div class="empty">No trips</div>'}
+        </div>
+      `;
+    });
+
+    if (data.orphan_trips && data.orphan_trips.length) {
+      html += `
+        <div class="user-card">
+          <div class="user-header">
+            <span class="user-email" style="color:var(--warn)">⚠️ Orphaned Trips (no owner)</span>
+          </div>
+          <table>
+            <thead><tr><th>Title</th><th>Stops</th><th>Photos</th><th>Videos</th><th>Updated</th></tr></thead>
+            <tbody>
+              ${data.orphan_trips.map(t => `
+                <tr>
+                  <td><strong>${escHtml(t.title)}</strong></td>
+                  <td>${t.stop_count}</td>
+                  <td>${t.photo_count}</td>
+                  <td>${t.video_count}</td>
+                  <td>${fmtDate(t.updated_at)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    container.innerHTML = html || '<div class="empty">No users found</div>';
+  } catch(e) {
+    document.getElementById('users-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+// Uploads
+async function loadUploads() {
+  try {
+    const data = await apiFetch('/uploads');
+    const el = document.getElementById('uploads-stats');
+
+    let html = `
+      <div class="stat-grid">
+        <div class="stat-card"><div class="value">${data.total_files}</div><div class="label">Total Files</div></div>
+        <div class="stat-card"><div class="value">${data.total_size_human}</div><div class="label">Total Size</div></div>
+        <div class="stat-card"><div class="value">${data.photo_files}</div><div class="label">Photo Files</div></div>
+        <div class="stat-card"><div class="value">${data.video_files}</div><div class="label">Video Files</div></div>
+        <div class="stat-card"><div class="value">${data.thumb_files}</div><div class="label">Thumbnails</div></div>
+      </div>
+    `;
+
+    if (data.orphan_files && data.orphan_files.length) {
+      html += `
+        <h3>⚠️ Orphan Files (on disk but not in DB) — ${data.orphan_files.length}</h3>
+        <div class="log-container" style="max-height:300px">
+          ${data.orphan_files.map(f => `<div class="log-entry">${escHtml(f)}</div>`).join('')}
+        </div>
+      `;
+    } else {
+      html += '<h3><span class="badge badge-ok">✓</span> No orphan files</h3>';
+    }
+
+    if (data.missing_files && data.missing_files.length) {
+      html += `
+        <h3>🚨 Missing Files (in DB but not on disk) — ${data.missing_files.length}</h3>
+        <div class="log-container" style="max-height:300px">
+          ${data.missing_files.map(f => `<div class="log-entry" style="color:var(--error)">${escHtml(f)}</div>`).join('')}
+        </div>
+      `;
+    } else {
+      html += '<h3><span class="badge badge-ok">✓</span> No missing files</h3>';
+    }
+
+    el.innerHTML = html;
+  } catch(e) {
+    document.getElementById('uploads-stats').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+// Issues
+async function loadIssues() {
+  try {
+    const data = await apiFetch('/upload-issues');
+    const container = document.getElementById('issues-container');
+
+    let html = '';
+
+    if (data.missing_photos && data.missing_photos.length) {
+      html += `<h3>🚨 Photos with Missing Files — ${data.missing_photos.length}</h3>`;
+      html += `<table>
+        <thead><tr><th>Original Name</th><th>Filename</th><th>Trip</th><th>Created</th></tr></thead>
+        <tbody>
+          ${data.missing_photos.map(p => `
+            <tr>
+              <td>${escHtml(p.original_name)}</td>
+              <td style="font-family:monospace;font-size:11px">${escHtml(p.filename)}</td>
+              <td>${escHtml(p.trip_title || p.trip_id)}</td>
+              <td>${fmtDate(p.created_at)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+    }
+
+    if (data.log_issues && data.log_issues.length) {
+      html += `<h3>📋 Upload-Related Log Errors — ${data.log_issues.length}</h3>`;
+      html += '<div class="log-container" style="max-height:400px">';
+      data.log_issues.forEach(e => {
+        html += `
+          <div class="log-entry">
+            <span class="time">${fmtTime(e.time)}</span>
+            <span class="level-${e.level}">${e.level}</span>
+            <span class="msg">${escHtml(e.msg)}</span>
+            <span class="detail" style="color:var(--text2);font-size:11px">${escHtml(stripParsed(e.raw, e.time, e.level, e.msg))}</span>
+          </div>
+        `;
+      });
+      html += '</div>';
+    }
+
+    if (!html) {
+      html = '<div class="empty"><span class="badge badge-ok" style="font-size:16px;padding:8px 20px;">✓ No upload issues found</span></div>';
+    }
+
+    container.innerHTML = html;
+  } catch(e) {
+    document.getElementById('issues-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+// Sessions
+async function loadSessions() {
+  try {
+    const data = await apiFetch('/sessions');
+    const container = document.getElementById('sessions-container');
+
+    if (!data || data.length === 0) {
+      container.innerHTML = '<div class="empty">No sessions</div>';
+      return;
+    }
+
+    container.innerHTML = `
+      <table>
+        <thead><tr><th>Email</th><th>Status</th><th>Created</th><th>Expires</th><th>Token</th></tr></thead>
+        <tbody>
+          ${data.map(s => `
+            <tr>
+              <td>${escHtml(s.email)}</td>
+              <td>${s.active ? '<span class="badge badge-ok">Active</span>' : '<span class="badge badge-error">Expired</span>'}</td>
+              <td>${fmtDate(s.created_at)}</td>
+              <td>${fmtDate(s.expires_at)}</td>
+              <td style="font-family:monospace;font-size:11px;color:var(--text2)">${escHtml(s.token)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch(e) {
+    document.getElementById('sessions-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+  }
+}
+
+// Utils
+function escHtml(s) {
+  if (!s) return '';
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function fmtTime(t) {
+  if (!t) return '';
+  try {
+    const d = new Date(t);
+    return d.toLocaleTimeString();
+  } catch { return t; }
+}
+
+function fmtDate(t) {
+  if (!t) return '';
+  try {
+    const d = new Date(t);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString();
+  } catch { return t; }
+}
+
+// Init
+initPanel();
+</script>
+</body>
+</html>
