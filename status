@@ -1,0 +1,2 @@
+#!/bin/bash
+systemctl status my-travels ; journalctl -u my-travels -f  # View logs

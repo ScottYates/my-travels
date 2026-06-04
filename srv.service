@@ -1,17 +1,17 @@
 [Unit]
-Description=Go web server
+Description=my-travels
 
 [Service]
 Type=simple
-User=exedev
-Group=exedev
-WorkingDirectory=/home/exedev
-ExecStart=/home/exedev/srv
+User=root
+Group=wheel
+WorkingDirectory=/opt/my-travels
+ExecStart=/opt/my-travels/start.sh
 Restart=always
 RestartSec=5
-Environment=HOME=/home/exedev
-Environment=USER=exedev
-EnvironmentFile=-/home/exedev/.env
+Environment=HOME=/root
+Environment=USER=root
+EnvironmentFile=-/opt/my-travels/.env
 StandardOutput=journal
 StandardError=journal
 
