@@ -40,6 +40,7 @@ type Server struct {
 	TemplatesDir       string
 	GoogleClientID     string
 	GoogleClientSecret string
+	AdminEmail         string
 
 	chunkedMu      sync.Mutex
 	chunkedUploads map[string]*chunkedUpload
@@ -71,7 +72,7 @@ func jsonCreated(w http.ResponseWriter, data any) {
 }
 
 // New creates a new Server, initializes the database, and ensures the upload directory exists.
-func New(dbPath, hostname, googleClientID, googleClientSecret, baseDir string) (*Server, error) {
+func New(dbPath, hostname, googleClientID, googleClientSecret, adminEmail, baseDir string) (*Server, error) {
 	uploadDir := filepath.Join(baseDir, "uploads")
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create upload dir: %w", err)
@@ -105,6 +106,7 @@ func New(dbPath, hostname, googleClientID, googleClientSecret, baseDir string) (
 		"upload_dir", uploadDir,
 		"templates_dir", templatesDir,
 		"static_dir", staticDir,
+		"admin_email", adminEmail,
 		"go_version", goVersion,
 	)
 
@@ -115,6 +117,7 @@ func New(dbPath, hostname, googleClientID, googleClientSecret, baseDir string) (
 		StaticDir:          staticDir,
 		GoogleClientID:     googleClientID,
 		GoogleClientSecret: googleClientSecret,
+		AdminEmail:         adminEmail,
 		chunkedUploads:     make(map[string]*chunkedUpload),
 		redirects:         loadRedirects(baseDir),
 	}
@@ -200,7 +203,7 @@ func (s *Server) getUser(r *http.Request) *authUser {
 	}
 
 	// If the real user is admin and has an impersonation cookie, act as that user.
-	if sess.Email == adminEmail {
+	if sess.Email == s.AdminEmail {
 		if ic, err := r.Cookie(impersonateCookieName); err == nil && ic.Value != "" {
 			// ic.Value is "userID:email"
 			parts := strings.SplitN(ic.Value, ":", 2)
@@ -401,10 +404,51 @@ func (s *Server) Serve(addr string) error {
 
 	slog.Info("starting server", "addr", addr)
 	var handler http.Handler = mux
+	handler = s.csrfCheck(handler)
 	if len(s.redirects) > 0 {
 		handler = s.redirectMiddleware(handler)
 	}
 	return http.ListenAndServe(addr, requestLogger(handler))
+}
+
+// csrfCheck is middleware that rejects cross-origin state-changing requests
+// (POST/PUT/DELETE/PATCH). Defense-in-depth on top of the SameSite=Lax cookie
+// attribute.
+//
+// Rules:
+//   - For safe methods (GET, HEAD, OPTIONS) the request is always allowed.
+//   - For state-changing methods, if the Origin header is present it must
+//     match the request's public origin (scheme + host). If only Referer is
+//     present, it must start with the public origin. If neither header is
+//     present, the request is allowed (the SameSite=Lax cookie is the primary
+//     defense for the missing-headers case — without it this middleware would
+//     be insufficient).
+func (s *Server) csrfCheck(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		origin := getPublicOrigin(r)
+
+		if o := r.Header.Get("Origin"); o != "" {
+			if o != origin {
+				slog.Warn("csrf: origin mismatch", "got", o, "want", origin, "path", r.URL.Path)
+				jsonError(w, "cross-origin request blocked", http.StatusForbidden)
+				return
+			}
+		} else if ref := r.Header.Get("Referer"); ref != "" {
+			if !strings.HasPrefix(ref, origin+"/") && ref != origin {
+				slog.Warn("csrf: referer mismatch", "got", ref, "want_prefix", origin, "path", r.URL.Path)
+				jsonError(w, "cross-origin request blocked", http.StatusForbidden)
+				return
+			}
+		}
+		// Neither Origin nor Referer set — allow and rely on SameSite cookie.
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -476,7 +520,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			"authenticated":  true,
 			"user_id":        u.UserID,
 			"email":          u.Email,
-			"is_admin":       realUser != nil && realUser.Email == adminEmail,
+			"is_admin":       realUser != nil && realUser.Email == s.AdminEmail,
 			"impersonating":  isImpersonating,
 			"real_email":     func() string { if realUser != nil { return realUser.Email }; return "" }(),
 		}
@@ -507,7 +551,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"user_id":       u.UserID,
 		"email":         u.Email,
-		"is_admin":      realUser != nil && realUser.Email == adminEmail,
+		"is_admin":      realUser != nil && realUser.Email == s.AdminEmail,
 		"impersonating": isImpersonating,
 	}
 	if isImpersonating {

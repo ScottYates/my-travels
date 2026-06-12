@@ -2653,6 +2653,11 @@ async function stopImpersonating() {
     alert('Failed to stop impersonating: ' + err.message);
   }
 }
+// The impersonation banner in the DOM uses an inline onclick="stopImpersonating()"
+// handler, which looks up the function on `window`. This whole script block is
+// wrapped in an IIFE, so the function above is not otherwise visible to the
+// inline handler. Expose it explicitly.
+window.stopImpersonating = stopImpersonating;
 
 async function handleLogout() {
   try {
@@ -7598,6 +7603,12 @@ window.deleteCommentModal = async function(cid) {
   }
 };
 
+// Expose renderers on `window` so the inline `onclick="renderPhotoModalComments()"`
+// generated inside the comment HTML can find them. Without this, the "Cancel"
+// button on the edit-comment modal is a no-op because the renderer is
+// IIFE-private and the inline handler looks it up on the global scope.
+window.renderPhotoModalComments = renderPhotoModalComments;
+
 $('#pmSendBtn').addEventListener('click', submitPhotoModalComment);
 $('#pmBodyInput').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') { e.preventDefault(); submitPhotoModalComment(); }
@@ -8077,6 +8088,12 @@ window.deleteCommentPres = async function(cid) {
     toast('Failed to delete comment', 'error');
   }
 };
+
+// Expose renderer on `window` so the inline `onclick="renderPresComments(...)"`
+// generated in the presentation-mode comment HTML can find it. Without this,
+// the "Cancel" button on the edit-comment modal in presentation mode is a no-op
+// because the renderer is IIFE-private.
+window.renderPresComments = renderPresComments;
 
 async function submitPresComment() {
   const body = presCommentInput.value.trim();

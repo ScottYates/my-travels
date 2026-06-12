@@ -16,12 +16,10 @@ import (
 	"time"
 )
 
-const adminEmail = "beernutz@gmail.com"
-
 // isAdmin returns true if the real (non-impersonated) user is the admin.
 func (s *Server) isAdmin(r *http.Request) bool {
 	u := s.getRealUser(r)
-	return u != nil && u.Email == adminEmail
+	return u != nil && u.Email == s.AdminEmail
 }
 
 // requireAdmin checks if the current user is admin; returns false and sends 403 if not.
@@ -618,7 +616,7 @@ func (s *Server) handleAdminImpersonate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	slog.Info("admin impersonate", "admin", adminEmail, "target_email", body.Email, "target_user_id", body.UserID)
+	slog.Info("admin impersonate", "admin", s.AdminEmail, "target_email", body.Email, "target_user_id", body.UserID)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     impersonateCookieName,
@@ -637,7 +635,7 @@ func (s *Server) handleAdminStopImpersonate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	slog.Info("admin stop impersonation", "admin", adminEmail)
+	slog.Info("admin stop impersonation", "admin", s.AdminEmail)
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     impersonateCookieName,

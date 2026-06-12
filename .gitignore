@@ -4,3 +4,12 @@ logs/
 my-travels
 .env
 redirects.json
+
+# Build artifacts
+build/
+*.exe
+
+# Node / Playwright dependencies
+node_modules/
+test-results/
+playwright-report/

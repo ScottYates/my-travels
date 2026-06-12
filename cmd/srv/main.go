@@ -29,6 +29,7 @@ func run() error {
 	logDir := os.Getenv("LOG_DIR")
 	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
 	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
+	adminEmail := envDefault("ADMIN_EMAIL", "beernutz@gmail.com")
 
 	if baseDir == "" {
 		exe, err := os.Executable()
@@ -50,7 +51,7 @@ func run() error {
 		hostname = "unknown"
 	}
 
-	server, err := srv.New("db.sqlite3", hostname, googleClientID, googleClientSecret, baseDir)
+	server, err := srv.New("db.sqlite3", hostname, googleClientID, googleClientSecret, adminEmail, baseDir)
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
