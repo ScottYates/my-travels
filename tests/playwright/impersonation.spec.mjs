@@ -144,22 +144,18 @@ export async function run({ playwright, baseURL, tokens }) {
       const fnExists = await page.evaluate(() => typeof window.stopImpersonating === 'function');
       assert(fnExists, 'window.stopImpersonating is not a function - the IIFE-scoping bug is back!');
 
-      // Capture all network responses to the stop-impersonate endpoint so we
-      // can confirm the button actually fired the request.
-      const stopResponses = [];
-      page.on('response', (r) => {
-        if (r.url().endsWith('/api/admin/stop-impersonate')) {
-          stopResponses.push({ status: r.status(), url: r.url() });
-        }
-      });
+      // Use waitForResponse so the request is captured even when
+      // window.location.reload() follows immediately after the fetch.
+      const stopResponsePromise = page.waitForResponse(
+        (r) => r.url().endsWith('/api/admin/stop-impersonate')
+      );
 
       await stopBtn.click();
+      const stopResponse = await stopResponsePromise;
       // Wait for the reload to complete.
       await page.waitForLoadState('networkidle');
 
-      // The browser must have actually POSTed to the stop endpoint.
-      assert(stopResponses.length > 0, 'click should trigger POST to /api/admin/stop-impersonate');
-      assert(stopResponses[0].status === 200, `stop-impersonate status = ${stopResponses[0].status}, want 200`);
+      assert(stopResponse.status() === 200, `stop-impersonate status = ${stopResponse.status()}, want 200`);
 
       // The banner must be gone now.
       const bannerCount = await page.locator('#impersonateBanner').count();
