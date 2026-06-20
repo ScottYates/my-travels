@@ -1937,6 +1937,50 @@ body.no-auth .readonly-badge { display: none !important; }
 .pres-exit-btn:hover {
   background: rgba(255,255,255,0.3);
 }
+.pres-fs-btn {
+  position: fixed;
+  top: 12px;
+  right: 175px;
+  z-index: 100001;
+  background: rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #fff;
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+  user-select: none;
+  min-width: 140px;
+  text-align: center;
+}
+.pres-fs-btn:hover {
+  background: rgba(255,255,255,0.3);
+}
+.pres-comments-btn {
+  position: fixed;
+  top: 12px;
+  right: 335px;
+  z-index: 100001;
+  background: rgba(0,0,0,0.5);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #fff;
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+  user-select: none;
+  min-width: 140px;
+  text-align: center;
+}
+.pres-comments-btn:hover {
+  background: rgba(255,255,255,0.3);
+}
+.pres-comments-btn.active {
+  background: rgba(255,255,255,0.25);
+  border-color: rgba(255,255,255,0.6);
+}
 
 /* Main content area */
 .pres-content {
@@ -1956,9 +2000,21 @@ body.no-auth .readonly-badge { display: none !important; }
   align-items: center;
   justify-content: center;
   flex-direction: column;
+  overflow: hidden;
+  touch-action: none; /* let our JS handle pinch / pan */
 }
 .pres-photo-slide.active {
   display: flex;
+}
+.pres-photo-slide.zoomed {
+  overflow: hidden;
+  cursor: grab;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* IE / old Edge */
+}
+.pres-photo-slide.zoomed::-webkit-scrollbar { display: none; }
+.pres-photo-slide.zoomed.panning {
+  cursor: grabbing;
 }
 .pres-photo-slide img {
   max-width: 100%;
@@ -1968,6 +2024,8 @@ body.no-auth .readonly-badge { display: none !important; }
   user-select: none;
   -webkit-user-drag: none;
   animation: presFadeIn 0.4s ease;
+  transform-origin: center center;
+  will-change: transform;
 }
 @keyframes presFadeIn {
   from { opacity: 0; transform: scale(0.97); }
@@ -2447,6 +2505,8 @@ body.no-auth .readonly-badge { display: none !important; }
 
 <!-- Presentation Mode Overlay -->
 <div id="presentationOverlay">
+  <button class="pres-comments-btn" id="presCommentsBtn" title="Show comments (C)">💬 Comments</button>
+  <button class="pres-fs-btn" id="presFsBtn" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
   <button class="pres-exit-btn" id="presExit">✕ Close</button>
   <div class="pres-topbar">
     <div style="display:flex;align-items:center;overflow:hidden">
@@ -7637,9 +7697,52 @@ const presCommentsPanel = $('#presCommentsPanel');
 const presCommentsList = $('#presCommentsList');
 const presCommentInput = $('#presCommentInput');
 const presAuthorInput = $('#presAuthorInput');
+const presFsBtn = $('#presFsBtn');
 
 // Set up author input: hide if logged in, show with saved name if not
 initAuthorInput(presAuthorInput);
+
+// Fullscreen toggle (button + 'F' shortcut + auto-reflect state)
+function togglePresFullscreen() {
+  if (document.fullscreenElement || document.webkitFullscreenElement) {
+    (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
+  } else {
+    const el = presOverlay;
+    if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+  }
+}
+function updatePresFsBtn() {
+  const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
+  if (!presFsBtn) return;
+  presFsBtn.textContent = inFs ? '⛶ Exit Fullscreen' : '⛶ Fullscreen';
+  presFsBtn.title = inFs ? 'Exit fullscreen (F)' : 'Enter fullscreen (F)';
+}
+if (presFsBtn) presFsBtn.addEventListener('click', togglePresFullscreen);
+document.addEventListener('fullscreenchange', updatePresFsBtn);
+document.addEventListener('webkitfullscreenchange', updatePresFsBtn);
+
+// Comments toggle (button + 'C' shortcut, hidden by default)
+const presCommentsBtn = $('#presCommentsBtn');
+let presCommentsVisible = false;
+function togglePresComments() {
+  presCommentsVisible = !presCommentsVisible;
+  if (presCommentsVisible) {
+    // Show panel for the current photo (or hide cleanly if no photo selected)
+    if (presCommentsPanel.dataset.photoId) {
+      presCommentsPanel.style.display = 'flex';
+    } else {
+      presCommentsPanel.style.display = 'none';
+    }
+    presCommentsBtn.classList.add('active');
+    presCommentsBtn.textContent = '💬 Hide Comments';
+  } else {
+    presCommentsPanel.style.display = 'none';
+    presCommentsBtn.classList.remove('active');
+    presCommentsBtn.textContent = '💬 Comments';
+  }
+}
+if (presCommentsBtn) presCommentsBtn.addEventListener('click', togglePresComments);
 
 let presSlides = [];
 let presIndex = 0;
@@ -7648,6 +7751,196 @@ let presMiniGlobeViewer = null;
 let presMiniSpinRAF = null;
 let presActive = false;
 const presImageCache = new Map();
+
+// Pinch-zoom / pan state for the current photo
+let presZoomLevel = 1;
+let presPanX = 0;
+let presPanY = 0;
+let presMultiTouchUsed = false;
+const PRES_ZOOM_MIN = 1;
+const PRES_ZOOM_MAX = 6;
+
+function applyPresImageTransform(img) {
+  img.style.transform = 'translate(' + presPanX + 'px, ' + presPanY + 'px) scale(' + presZoomLevel + ')';
+}
+
+function setupPresPinchZoom(container, img) {
+  const state = { pointers: new Map(), startDist: 0, startZoom: 1, startMidX: 0, startMidY: 0, startPanX: 0, startPanY: 0, panning: false, panStartX: 0, panStartY: 0 };
+
+  function clampPan() {
+    // Keep the image from being dragged completely off screen
+    const rect = img.getBoundingClientRect();
+    const cw = container.clientWidth, ch = container.clientHeight;
+    const w = rect.width, h = rect.height;
+    const maxX = Math.max(0, (w - cw) / 2) + 40;
+    const maxY = Math.max(0, (h - ch) / 2) + 40;
+    if (presPanX > maxX) presPanX = maxX;
+    if (presPanX < -maxX) presPanX = -maxX;
+    if (presPanY > maxY) presPanY = maxY;
+    if (presPanY < -maxY) presPanY = -maxY;
+  }
+
+  function refreshZoomClass() {
+    if (presZoomLevel > 1.01) {
+      container.classList.add('zoomed');
+    } else {
+      container.classList.remove('zoomed');
+      // Snap pan back when fully zoomed out
+      if (presZoomLevel <= 1) {
+        presPanX = 0;
+        presPanY = 0;
+      }
+    }
+  }
+
+  container.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      presMultiTouchUsed = true;
+      e.preventDefault();
+      const t1 = e.touches[0], t2 = e.touches[1];
+      state.pointers.set(t1.identifier, { x: t1.clientX, y: t1.clientY });
+      state.pointers.set(t2.identifier, { x: t2.clientX, y: t2.clientY });
+      state.startDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      state.startZoom = presZoomLevel;
+      state.startMidX = (t1.clientX + t2.clientX) / 2;
+      state.startMidY = (t1.clientY + t2.clientY) / 2;
+      state.startPanX = presPanX;
+      state.startPanY = presPanY;
+    } else if (e.touches.length === 1 && presZoomLevel > 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      state.panStartX = t.clientX - presPanX;
+      state.panStartY = t.clientY - presPanY;
+      state.panning = true;
+      container.classList.add('panning');
+    }
+  }, { passive: false });
+
+  container.addEventListener('touchmove', (e) => {
+    if (e.touches.length === 2 && state.pointers.size === 2) {
+      e.preventDefault();
+      const [t1, t2] = [e.touches[0], e.touches[1]];
+      const newDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      const ratio = newDist / state.startDist;
+      let nextZoom = state.startZoom * ratio;
+      if (nextZoom < PRES_ZOOM_MIN) nextZoom = PRES_ZOOM_MIN;
+      if (nextZoom > PRES_ZOOM_MAX) nextZoom = PRES_ZOOM_MAX;
+      // Pan so the midpoint between the two fingers stays under the original midpoint
+      const newMidX = (t1.clientX + t2.clientX) / 2;
+      const newMidY = (t1.clientY + t2.clientY) / 2;
+      presPanX = state.startPanX + (newMidX - state.startMidX);
+      presPanY = state.startPanY + (newMidY - state.startMidY);
+      presZoomLevel = nextZoom;
+      applyPresImageTransform(img);
+      refreshZoomClass();
+    } else if (e.touches.length === 1 && state.panning && presZoomLevel > 1) {
+      e.preventDefault();
+      const t = e.touches[0];
+      presPanX = t.clientX - state.panStartX;
+      presPanY = t.clientY - state.panStartY;
+      clampPan();
+      applyPresImageTransform(img);
+    }
+  }, { passive: false });
+
+  function endTouches(e) {
+    // Drop ended pointers
+    if (e.changedTouches) {
+      for (const t of e.changedTouches) state.pointers.delete(t.identifier);
+    }
+    if (e.touches.length < 2) {
+      // After lifting a finger, reset pinch baseline so a new pinch can start cleanly
+      state.startDist = 0;
+      state.startZoom = presZoomLevel;
+      state.startPanX = presPanX;
+      state.startPanY = presPanY;
+    }
+    if (e.touches.length === 0) {
+      state.panning = false;
+      container.classList.remove('panning');
+    }
+  }
+  container.addEventListener('touchend', endTouches);
+  container.addEventListener('touchcancel', endTouches);
+
+  // Desktop convenience: double-click toggles 1x <-> 2x
+  container.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    if (presZoomLevel > 1.01) {
+      presZoomLevel = 1;
+      presPanX = 0;
+      presPanY = 0;
+    } else {
+      presZoomLevel = 2;
+      // Zoom toward the click point
+      const rect = container.getBoundingClientRect();
+      const cx = e.clientX - rect.left - rect.width / 2;
+      const cy = e.clientY - rect.top - rect.height / 2;
+      presPanX = -cx;
+      presPanY = -cy;
+      clampPan();
+    }
+    applyPresImageTransform(img);
+    refreshZoomClass();
+  });
+
+  // Mouse wheel zoom (no modifier needed)
+  container.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    // Normalize delta across browsers/devices
+    let deltaY = e.deltaY;
+    if (e.deltaMode === 1) deltaY *= 16;      // line mode
+    else if (e.deltaMode === 2) deltaY *= 400; // page mode
+    const factor = Math.exp(-deltaY * 0.0015);
+    let next = presZoomLevel * factor;
+    if (next < PRES_ZOOM_MIN) next = PRES_ZOOM_MIN;
+    if (next > PRES_ZOOM_MAX) next = PRES_ZOOM_MAX;
+
+    // Zoom toward the cursor position
+    const rect = container.getBoundingClientRect();
+    const cx = e.clientX - rect.left - rect.width / 2;
+    const cy = e.clientY - rect.top - rect.height / 2;
+    // Adjust pan so the point under the cursor stays under the cursor
+    const ratio = next / presZoomLevel;
+    presPanX = cx - (cx - presPanX) * ratio;
+    presPanY = cy - (cy - presPanY) * ratio;
+    presZoomLevel = next;
+    if (presZoomLevel <= 1) { presPanX = 0; presPanY = 0; }
+    applyPresImageTransform(img);
+    refreshZoomClass();
+  }, { passive: false });
+
+  // Mouse click-and-drag pan (only when zoomed in)
+  container.addEventListener('mousedown', (e) => {
+    if (presZoomLevel <= 1.01) return;
+    if (e.button !== 0) return; // only left button
+    e.preventDefault();
+    state.panning = true;
+    state.mousePanned = false;
+    state.panStartX = e.clientX - presPanX;
+    state.panStartY = e.clientY - presPanY;
+    container.classList.add('panning');
+  });
+  container.addEventListener('mousemove', (e) => {
+    if (!state.panning || presZoomLevel <= 1.01) return;
+    e.preventDefault();
+    presPanX = e.clientX - state.panStartX;
+    presPanY = e.clientY - state.panStartY;
+    clampPan();
+    applyPresImageTransform(img);
+    state.mousePanned = true;
+  });
+  function endMousePan() {
+    if (!state.panning) return;
+    state.panning = false;
+    container.classList.remove('panning');
+    // Brief grace period: the click event still fires after mouseup; the overlay
+    // click handler will check presMultiTouchUsed, but mousedown was on the
+    // photo slide so the click handler is already skipped via closest('.pres-photo-slide').
+  }
+  container.addEventListener('mouseup', endMousePan);
+  container.addEventListener('mouseleave', endMousePan);
+}
 
 function buildPresentationSlides() {
   const trip = state.currentTrip;
@@ -7728,6 +8021,9 @@ function startPresentation() {
   if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
   else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
 
+  // Sync the fullscreen button label with the post-request state
+  setTimeout(updatePresFsBtn, 0);
+
   // Show controls briefly
   presOverlay.classList.add('show-controls');
   setTimeout(() => presOverlay.classList.remove('show-controls'), 2000);
@@ -7751,6 +8047,11 @@ function stopPresentation() {
   destroyPresMiniGlobe();
   presImageCache.clear();
   presCommentsPanel.style.display = 'none';
+  presCommentsVisible = false;
+  if (presCommentsBtn) {
+    presCommentsBtn.classList.remove('active');
+    presCommentsBtn.textContent = '💬 Comments';
+  }
 
   if (document.fullscreenElement || document.webkitFullscreenElement) {
     (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
@@ -7808,6 +8109,12 @@ function showPresPhoto(slide) {
   const container = document.createElement('div');
   container.className = 'pres-photo-slide active';
 
+  // Reset zoom/pan state for the new photo
+  presZoomLevel = 1;
+  presPanX = 0;
+  presPanY = 0;
+  presMultiTouchUsed = false;
+
   if (slide.photo.is_video) {
     const vid = document.createElement('video');
     vid.src = '/uploads/' + slide.photo.filename;
@@ -7829,6 +8136,7 @@ function showPresPhoto(slide) {
     img.alt = slide.caption || '';
     img.draggable = false;
     container.appendChild(img);
+    setupPresPinchZoom(container, img);
   }
   presContent.appendChild(container);
 
@@ -8015,11 +8323,13 @@ function updatePresMiniGlobe(loc, label) {
 // ---- Comments ----
 function renderPresComments(photoId) {
   if (!photoId) {
+    presCommentsPanel.dataset.photoId = '';
     presCommentsPanel.style.display = 'none';
     return;
   }
-  presCommentsPanel.style.display = 'flex';
   presCommentsPanel.dataset.photoId = photoId;
+  // Respect the user's toggle: only show the panel if they asked for it
+  presCommentsPanel.style.display = presCommentsVisible ? 'flex' : 'none';
 
   const comments = getCommentsForPhoto(photoId);
   const owner = isOwner();
@@ -8252,12 +8562,36 @@ $('#presExit').addEventListener('click', stopPresentation);
 $('#presPrev').addEventListener('click', () => showPresSlide(presIndex - 1));
 $('#presNext').addEventListener('click', () => showPresSlide(presIndex + 1));
 
+// Tap-to-navigate: left half = previous, right half = next
+// Ignores clicks on UI controls so buttons, comments, inputs, etc. still work.
+presOverlay.addEventListener('click', (e) => {
+  if (!presActive) return;
+  // Don't hijack clicks on interactive controls
+  if (e.target.closest('button, input, textarea, .pres-topbar, .pres-bottom, .pres-comments, .pres-mini-globe-wrap')) return;
+  // When zoomed in, the photo slide owns panning — only skip if the click is inside the photo
+  if (presZoomLevel > 1.01 && e.target.closest('.pres-photo-slide')) return;
+  // Don't navigate if the user just pinched / zoomed
+  if (presMultiTouchUsed) { presMultiTouchUsed = false; return; }
+  const x = e.clientX;
+  const half = window.innerWidth / 2;
+  if (x < half) {
+    showPresSlide(presIndex - 1);
+  } else {
+    showPresSlide(presIndex + 1);
+  }
+  // Briefly flash the controls so the user sees navigation worked
+  presOverlay.classList.add('show-controls');
+  setTimeout(() => presOverlay.classList.remove('show-controls'), 800);
+});
+
 // Keyboard navigation
 document.addEventListener('keydown', (e) => {
   if (!presActive) return;
   if (e.key === 'Escape') { stopPresentation(); e.preventDefault(); }
   else if (e.key === 'ArrowRight' || e.key === ' ') { showPresSlide(presIndex + 1); e.preventDefault(); }
   else if (e.key === 'ArrowLeft') { showPresSlide(presIndex - 1); e.preventDefault(); }
+  else if (e.key === 'f' || e.key === 'F') { togglePresFullscreen(); e.preventDefault(); }
+  else if (e.key === 'c' || e.key === 'C') { togglePresComments(); e.preventDefault(); }
 });
 
 // When exiting fullscreen, just keep presentation running (non-fullscreen is fine)
