@@ -1898,10 +1898,12 @@ body.no-auth .readonly-badge { display: none !important; }
   z-index: 10;
   opacity: 0;
   transition: opacity 0.3s;
+  pointer-events: none;
 }
-#presentationOverlay:hover .pres-topbar,
-#presentationOverlay.show-controls .pres-topbar {
+/* Show the top bar only when the user explicitly reveals controls */
+#presentationOverlay.reveal-controls .pres-topbar {
   opacity: 1;
+  pointer-events: auto;
 }
 .pres-topbar .pres-title {
   color: #fff;
@@ -2092,10 +2094,11 @@ body.no-auth .readonly-badge { display: none !important; }
 .pres-nav {
   opacity: 0;
   transition: opacity 0.3s;
+  pointer-events: none;
 }
-#presentationOverlay:hover .pres-nav,
-#presentationOverlay.show-controls .pres-nav {
+#presentationOverlay.reveal-controls .pres-nav {
   opacity: 1;
+  pointer-events: auto;
 }
 .pres-caption {
   color: #fff;
@@ -2196,6 +2199,38 @@ body.no-auth .readonly-badge { display: none !important; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Bottom-center reveal zone: the only way to surface the topbar + nav */
+.pres-reveal-zone {
+  position: fixed;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 120px;
+  height: 36px;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: 6px;
+  color: rgba(255,255,255,0.35);
+  font-size: 14px;
+  letter-spacing: 4px;
+  user-select: none;
+  transition: color 0.2s, background 0.2s;
+}
+.pres-reveal-zone::before {
+  content: "\2022 \2022 \2022";
+}
+.pres-reveal-zone:hover {
+  color: rgba(255,255,255,0.9);
+  background: rgba(0,0,0,0.3);
+}
+#presentationOverlay.reveal-controls .pres-reveal-zone {
+  /* When controls are visible, the zone becomes a "hide" affordance */
+  color: rgba(255,255,255,0.7);
 }
 
 /* Comments panel in presentation */
@@ -2545,6 +2580,7 @@ body.no-auth .readonly-badge { display: none !important; }
       <button id="presNext" title="Next (→)">›</button>
     </div>
   </div>
+  <div class="pres-reveal-zone" id="presRevealZone" title="Show / hide controls"></div>
 </div>
 
 <script>
@@ -8033,10 +8069,6 @@ function startPresentation() {
   // Sync the fullscreen button label with the post-request state
   setTimeout(updatePresFsBtn, 0);
 
-  // Show controls briefly
-  presOverlay.classList.add('show-controls');
-  setTimeout(() => presOverlay.classList.remove('show-controls'), 2000);
-
   // Initialize the persistent mini globe
   initPresMiniGlobe();
 
@@ -8061,6 +8093,8 @@ function stopPresentation() {
     presCommentsBtn.classList.remove('active');
     presCommentsBtn.title = 'Show comments (C)';
   }
+  presOverlay.classList.remove('reveal-controls');
+  if (presRevealTimer) { clearTimeout(presRevealTimer); presRevealTimer = null; }
 
   if (document.fullscreenElement || document.webkitFullscreenElement) {
     (document.exitFullscreen || document.webkitExitFullscreen || (() => {})).call(document);
@@ -8576,7 +8610,7 @@ $('#presNext').addEventListener('click', () => showPresSlide(presIndex + 1));
 presOverlay.addEventListener('click', (e) => {
   if (!presActive) return;
   // Don't hijack clicks on interactive controls
-  if (e.target.closest('button, input, textarea, .pres-topbar, .pres-bottom, .pres-comments, .pres-mini-globe-wrap')) return;
+  if (e.target.closest('button, input, textarea, .pres-topbar, .pres-bottom, .pres-comments, .pres-mini-globe-wrap, .pres-reveal-zone')) return;
   // When zoomed in, the photo slide owns panning — only skip if the click is inside the photo
   if (presZoomLevel > 1.01 && e.target.closest('.pres-photo-slide')) return;
   // Don't navigate if the user just pinched / zoomed
@@ -8588,10 +8622,25 @@ presOverlay.addEventListener('click', (e) => {
   } else {
     showPresSlide(presIndex + 1);
   }
-  // Briefly flash the controls so the user sees navigation worked
-  presOverlay.classList.add('show-controls');
-  setTimeout(() => presOverlay.classList.remove('show-controls'), 800);
 });
+
+// Reveal-zone click: toggle topbar + nav visibility, auto-hide after 3s
+const presRevealZone = $('#presRevealZone');
+let presRevealTimer = null;
+function togglePresReveal() {
+  if (presOverlay.classList.contains('reveal-controls')) {
+    presOverlay.classList.remove('reveal-controls');
+    if (presRevealTimer) { clearTimeout(presRevealTimer); presRevealTimer = null; }
+  } else {
+    presOverlay.classList.add('reveal-controls');
+    if (presRevealTimer) clearTimeout(presRevealTimer);
+    presRevealTimer = setTimeout(() => {
+      presOverlay.classList.remove('reveal-controls');
+      presRevealTimer = null;
+    }, 3000);
+  }
+}
+if (presRevealZone) presRevealZone.addEventListener('click', (e) => { e.stopPropagation(); togglePresReveal(); });
 
 // Keyboard navigation
 document.addEventListener('keydown', (e) => {
