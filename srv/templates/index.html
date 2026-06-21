@@ -1923,16 +1923,19 @@ body.no-auth .readonly-badge { display: none !important; }
 .pres-exit-btn {
   position: fixed;
   top: 12px;
-  right: 16px;
+  right: 12px;
   z-index: 100001;
   background: rgba(0,0,0,0.5);
   border: 1px solid rgba(255,255,255,0.3);
   color: #fff;
-  padding: 6px 16px;
+  padding: 6px 10px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 16px;
+  line-height: 1;
   transition: background 0.2s;
+  min-width: 36px;
+  text-align: center;
 }
 .pres-exit-btn:hover {
   background: rgba(255,255,255,0.3);
@@ -1940,38 +1943,44 @@ body.no-auth .readonly-badge { display: none !important; }
 .pres-fs-btn {
   position: fixed;
   top: 12px;
-  right: 175px;
+  right: 58px;
   z-index: 100001;
   background: rgba(0,0,0,0.5);
   border: 1px solid rgba(255,255,255,0.3);
   color: #fff;
-  padding: 6px 16px;
+  padding: 6px 10px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 16px;
+  line-height: 1;
   transition: background 0.2s;
   user-select: none;
-  min-width: 140px;
+  min-width: 36px;
   text-align: center;
 }
 .pres-fs-btn:hover {
   background: rgba(255,255,255,0.3);
 }
+.pres-fs-btn.active {
+  background: rgba(255,255,255,0.25);
+  border-color: rgba(255,255,255,0.6);
+}
 .pres-comments-btn {
   position: fixed;
   top: 12px;
-  right: 335px;
+  right: 104px;
   z-index: 100001;
   background: rgba(0,0,0,0.5);
   border: 1px solid rgba(255,255,255,0.3);
   color: #fff;
-  padding: 6px 16px;
+  padding: 6px 10px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 16px;
+  line-height: 1;
   transition: background 0.2s;
   user-select: none;
-  min-width: 140px;
+  min-width: 36px;
   text-align: center;
 }
 .pres-comments-btn:hover {
@@ -2505,9 +2514,9 @@ body.no-auth .readonly-badge { display: none !important; }
 
 <!-- Presentation Mode Overlay -->
 <div id="presentationOverlay">
-  <button class="pres-comments-btn" id="presCommentsBtn" title="Show comments (C)">💬 Comments</button>
-  <button class="pres-fs-btn" id="presFsBtn" title="Toggle fullscreen (F)">⛶ Fullscreen</button>
-  <button class="pres-exit-btn" id="presExit">✕ Close</button>
+  <button class="pres-comments-btn" id="presCommentsBtn" title="Show comments (C)">💬</button>
+  <button class="pres-fs-btn" id="presFsBtn" title="Toggle fullscreen (F)">⛶</button>
+  <button class="pres-exit-btn" id="presExit" title="Close (Esc)">✕</button>
   <div class="pres-topbar">
     <div style="display:flex;align-items:center;overflow:hidden">
       <span class="pres-title" id="presTitle"></span>
@@ -7715,7 +7724,7 @@ function togglePresFullscreen() {
 function updatePresFsBtn() {
   const inFs = !!(document.fullscreenElement || document.webkitFullscreenElement);
   if (!presFsBtn) return;
-  presFsBtn.textContent = inFs ? '⛶ Exit Fullscreen' : '⛶ Fullscreen';
+  presFsBtn.classList.toggle('active', inFs);
   presFsBtn.title = inFs ? 'Exit fullscreen (F)' : 'Enter fullscreen (F)';
 }
 if (presFsBtn) presFsBtn.addEventListener('click', togglePresFullscreen);
@@ -7735,11 +7744,11 @@ function togglePresComments() {
       presCommentsPanel.style.display = 'none';
     }
     presCommentsBtn.classList.add('active');
-    presCommentsBtn.textContent = '💬 Hide Comments';
+    presCommentsBtn.title = 'Hide comments (C)';
   } else {
     presCommentsPanel.style.display = 'none';
     presCommentsBtn.classList.remove('active');
-    presCommentsBtn.textContent = '💬 Comments';
+    presCommentsBtn.title = 'Show comments (C)';
   }
 }
 if (presCommentsBtn) presCommentsBtn.addEventListener('click', togglePresComments);
@@ -8050,7 +8059,7 @@ function stopPresentation() {
   presCommentsVisible = false;
   if (presCommentsBtn) {
     presCommentsBtn.classList.remove('active');
-    presCommentsBtn.textContent = '💬 Comments';
+    presCommentsBtn.title = 'Show comments (C)';
   }
 
   if (document.fullscreenElement || document.webkitFullscreenElement) {
