@@ -2640,6 +2640,7 @@ body.no-auth .readonly-badge { display: none !important; }
       <span>Pinch / scroll / double-click</span><span>Zoom image</span>
       <span>Drag (when zoomed)</span><span>Pan image</span>
       <span>Tap bottom &hellip;</span><span>Show controls</span>
+      <span><kbd>?</kbd></span><span>Show / hide this help</span>
     </div>
   </div>
 </div>
@@ -8150,6 +8151,11 @@ function dismissPresHelp() {
   if (!presHelp || !presHelp.classList.contains('visible')) return;
   presHelp.classList.remove('visible');
 }
+function togglePresHelp() {
+  if (!presHelp) return;
+  if (presHelp.classList.contains('visible')) dismissPresHelp();
+  else showPresHelp();
+}
 
 function stopPresentation() {
   presActive = false;
@@ -8724,11 +8730,15 @@ if (presRevealZone) presRevealZone.addEventListener('click', (e) => { e.stopProp
 // Keyboard navigation
 document.addEventListener('keydown', (e) => {
   if (!presActive) return;
+  // Don't hijack typing in comment boxes, inputs, or contenteditable regions
+  const tag = e.target && e.target.tagName;
+  const isEditable = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable);
   if (e.key === 'Escape') { stopPresentation(); e.preventDefault(); }
   else if (e.key === 'ArrowRight' || e.key === ' ') { dismissPresHelp(); showPresSlide(presIndex + 1); e.preventDefault(); }
   else if (e.key === 'ArrowLeft') { dismissPresHelp(); showPresSlide(presIndex - 1); e.preventDefault(); }
   else if (e.key === 'f' || e.key === 'F') { dismissPresHelp(); togglePresFullscreen(); e.preventDefault(); }
   else if (e.key === 'c' || e.key === 'C') { dismissPresHelp(); togglePresComments(); e.preventDefault(); }
+  else if (e.key === '?' && !isEditable) { togglePresHelp(); e.preventDefault(); }
 });
 
 // When exiting fullscreen, just keep presentation running (non-fullscreen is fine)
