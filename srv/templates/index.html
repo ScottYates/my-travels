@@ -8136,26 +8136,19 @@ function startPresentation() {
 
   showPresSlide(0);
 
-  // Show the quick-start help panel; auto-hides after 6s and on first interaction
+  // Show the quick-start help panel; stays until the user starts navigating
   showPresHelp();
 }
 
 // ---- Help panel ----
 const presHelp = $('#presHelp');
-let presHelpTimer = null;
 function showPresHelp() {
   if (!presHelp) return;
   presHelp.classList.add('visible');
-  if (presHelpTimer) clearTimeout(presHelpTimer);
-  presHelpTimer = setTimeout(() => {
-    presHelp.classList.remove('visible');
-    presHelpTimer = null;
-  }, 6000);
 }
 function dismissPresHelp() {
   if (!presHelp || !presHelp.classList.contains('visible')) return;
   presHelp.classList.remove('visible');
-  if (presHelpTimer) { clearTimeout(presHelpTimer); presHelpTimer = null; }
 }
 
 function stopPresentation() {
