@@ -61,12 +61,13 @@ func run() error {
 // setupFileLogging creates a log directory and configures slog to write
 // to both stderr and a daily log file (logs/YYYY-MM-DD.log).
 func setupFileLogging(logDir string) error {
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
+	// #nosec G703 -- log dir is operator-controlled (env var LOG_DIR).
+	if err := os.MkdirAll(logDir, 0o755); err != nil { // #nosec G301 -- log dir is operator-controlled (env var LOG_DIR).
 		return fmt.Errorf("create log directory %s: %w", logDir, err)
 	}
 
-	logFile := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")   // #nosec G703 -- log dir is operator-controlled; date format is fixed (time.Format with a literal layout, not user input).
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) // #nosec G304,G703 -- log dir is operator-controlled.
 	if err != nil {
 		return fmt.Errorf("open log file %s: %w", logFile, err)
 	}
@@ -94,11 +95,11 @@ func envDefault(key, fallback string) string {
 // already present in the environment. Lines starting with # and blank lines
 // are ignored. Values may optionally be quoted with single or double quotes.
 func loadEnvFile(path string) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- .env path is operator-supplied at startup
 	if err != nil {
 		return // missing .env is fine
 	}
-	defer f.Close()
+	defer f.Close() // #nosec G104 -- best-effort close; file handle released either way
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -118,7 +119,7 @@ func loadEnvFile(path string) {
 		}
 		// Don't override existing env vars
 		if _, exists := os.LookupEnv(key); !exists {
-			os.Setenv(key, val)
+			os.Setenv(key, val) // #nosec G104 -- Setenv error is non-actionable; we don't want to crash startup over a single bad line
 		}
 	}
 }

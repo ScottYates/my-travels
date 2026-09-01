@@ -500,11 +500,11 @@ func TestUpdateStop(t *testing.T) {
 // TestImpersonationFlow exercises the full impersonation cycle. This is the
 // flow whose UI button was broken by the IIFE-scoping bug.
 //
-//	1. Admin logs in.
-//	2. Admin POSTs to /api/admin/impersonate with a target user.
-//	3. Subsequent /api/me calls report the *target* user, with impersonating=true.
-//	4. Admin POSTs to /api/admin/stop-impersonate.
-//	5. /api/me reports the admin again, with impersonating=false.
+//  1. Admin logs in.
+//  2. Admin POSTs to /api/admin/impersonate with a target user.
+//  3. Subsequent /api/me calls report the *target* user, with impersonating=true.
+//  4. Admin POSTs to /api/admin/stop-impersonate.
+//  5. /api/me reports the admin again, with impersonating=false.
 //
 // The test uses a real net/http CookieJar, the same way a real browser would,
 // so the MaxAge=-1 cookie returned by stop-impersonate is automatically
@@ -1006,8 +1006,9 @@ func TestEvictExpiredChunkedUploads_MissingFile(t *testing.T) {
 }
 
 // TestSanitiseTripTitleForFilename covers the two layers of sanitisation:
-//   1. Strip non-printable / control characters (HTTP response splitting).
-//   2. Replace filesystem-hostile characters with '-'.
+//  1. Strip non-printable / control characters (HTTP response splitting).
+//  2. Replace filesystem-hostile characters with '-'.
+//
 // Regression test for audit issue #7 — Content-Disposition header injection.
 func TestSanitiseTripTitleForFilename(t *testing.T) {
 	tests := []struct {

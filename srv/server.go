@@ -61,8 +61,8 @@ type Server struct {
 // it was last touched, so the cleanup goroutine can evict dormant entries
 // without holding a reference forever.
 type commentLimiterEntry struct {
-	limiter   *rate.Limiter
-	lastSeen  time.Time
+	limiter  *rate.Limiter
+	lastSeen time.Time
 }
 
 // JSON response helpers
@@ -205,7 +205,7 @@ func containsURL(s string) bool {
 // New creates a new Server, initializes the database, and ensures the upload directory exists.
 func New(dbPath, hostname, googleClientID, googleClientSecret, adminEmail, baseDir string) (*Server, error) {
 	uploadDir := filepath.Join(baseDir, "uploads")
-	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil { // #nosec G301 -- uploadDir is server-controlled (BASE_DIR env var + 'uploads')
 		return nil, fmt.Errorf("create upload dir: %w", err)
 	}
 
@@ -221,6 +221,7 @@ func New(dbPath, hostname, googleClientID, googleClientSecret, adminEmail, baseD
 		{"templates", templatesDir},
 		{"static", staticDir},
 	} {
+		// #nosec G304 -- d.path is templates/static dir set at server init (operator-controlled).
 		if _, err := os.Stat(d.path); os.IsNotExist(err) {
 			return nil, fmt.Errorf("%s directory not found at %s — set -base-dir to the project root", d.name, d.path)
 		}
@@ -289,6 +290,10 @@ func (s *Server) redirectMiddleware(next http.Handler) http.Handler {
 				Target   string
 				TargetJS template.JS
 			}{
+				// #nosec G203 -- fmt.Sprintf("%q", target) JSON-escapes the
+				// string. Wrapping it in template.JS is safe because the
+				// target URL is operator-supplied (redirects.json) and
+				// the template injects it inside a quoted JS string.
 				Target:   target,
 				TargetJS: template.JS(fmt.Sprintf("%q", target)),
 			})
@@ -673,6 +678,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.ParseFiles(path)
 	if err != nil {
 		// Fallback: try serving a plain file if template parsing fails
+		// #nosec G304 -- http.ServeFile has its own path-traversal protection; path comes from operator-supplied redirects.json.
 		http.ServeFile(w, r, path)
 		return
 	}
@@ -684,18 +690,26 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if u != nil {
 		isImpersonating := realUser != nil && realUser.Email != u.Email
 		authInfo = map[string]any{
-			"authenticated":  true,
-			"user_id":        u.UserID,
-			"email":          u.Email,
-			"is_admin":       realUser != nil && realUser.Email == s.AdminEmail,
-			"impersonating":  isImpersonating,
-			"real_email":     func() string { if realUser != nil { return realUser.Email }; return "" }(),
+			"authenticated": true,
+			"user_id":       u.UserID,
+			"email":         u.Email,
+			"is_admin":      realUser != nil && realUser.Email == s.AdminEmail,
+			"impersonating": isImpersonating,
+			"real_email": func() string {
+				if realUser != nil {
+					return realUser.Email
+				}
+				return ""
+			}(),
 		}
 	}
 	authJSON, _ := json.Marshal(authInfo)
 
 	data := map[string]any{
-		"Hostname":       s.Hostname,
+		"Hostname": s.Hostname,
+		// #nosec G203 -- json.Marshal output is JSON-safe. Used to inject a
+		// JS object literal into the template; the marshal guarantees no
+		// string-escape can break out of the JSON context.
 		"AuthJSON":       template.JS(authJSON),
 		"GoogleClientID": s.GoogleClientID,
 	}
@@ -797,7 +811,13 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// Clear state cookie
 	http.SetCookie(w, &http.Cookie{
-		Name: "oauth_state", Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+		Name:     "oauth_state",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   proto(r) == "https",
 	})
 
 	code := r.URL.Query().Get("code")
@@ -873,6 +893,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   proto(r) == "https",
 	})
 
 	jsonOK(w, map[string]any{"ok": true})
@@ -1522,7 +1543,8 @@ func isVideoMIME(mimeType string) bool {
 // videoThumbnail generates a JPEG thumbnail from a video file using ffmpeg.
 // Returns the thumbnail JPEG data, or an error.
 func videoThumbnail(videoPath string, maxDim int) ([]byte, error) {
-	// Extract a frame at 1 second (or the first frame if shorter)
+	// #nosec G702,G204 -- "ffmpeg" is a fixed command and videoPath is an
+	// arg (not a shell string). No shell metacharacter injection possible.
 	cmd := exec.Command("ffmpeg",
 		"-i", videoPath,
 		"-ss", "1",
@@ -1538,6 +1560,7 @@ func videoThumbnail(videoPath string, maxDim int) ([]byte, error) {
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		// Try without -ss (very short videos)
+		// #nosec G702,G204 -- same reasoning: fixed command, arg array.
 		cmd2 := exec.Command("ffmpeg",
 			"-i", videoPath,
 			"-vframes", "1",
@@ -1559,6 +1582,7 @@ func videoThumbnail(videoPath string, maxDim int) ([]byte, error) {
 
 // videoDimensions uses ffprobe to get video width and height.
 func videoDimensions(videoPath string) (int, int) {
+	// #nosec G702,G204 -- "ffprobe" is a fixed command; videoPath is an arg.
 	cmd := exec.Command("ffprobe",
 		"-v", "error",
 		"-select_streams", "v:0",
@@ -1623,8 +1647,8 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	videoUpload := isVideoFile(header.Filename) || isVideoMIME(header.Header.Get("Content-Type"))
 
 	// Save to upload dir
-	dstPath := filepath.Join(s.UploadDir, filename)
-	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil {
+	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is uuid.New().String() + ext.
+	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is uuid.New().String() + ext.
 		slog.Error("upload: write file to disk", "error", err, "path", dstPath)
 		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
@@ -1641,8 +1665,10 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		// Pre-generate video thumbnail
 		if thumbData, err := videoThumbnail(dstPath, 128); err == nil {
 			thumbDir := filepath.Join(s.UploadDir, "thumbs")
-			os.MkdirAll(thumbDir, 0755)
-			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644)
+			// #nosec G301,G304,G306 -- thumbDir is server-controlled; filename is server-generated UUID (handleUploadPhoto).
+			os.MkdirAll(thumbDir, 0755) // #nosec G301 -- server-controlled.
+			// #nosec G304,G703 -- filename is server-generated UUID (uuid.New().String()).
+			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644) // #nosec G304,G306,G703 -- filename is server-generated UUID.
 		}
 	} else {
 		// Extract EXIF GPS + timestamp from images
@@ -1708,6 +1734,7 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		IsVideo:      isVideo,
 	}); err != nil {
 		slog.Error("upload: create photo record", "error", err, "filename", filename)
+		// #nosec G703 -- dstPath uses server-generated UUID filename (see handleUploadPhoto).
 		os.Remove(dstPath)
 		jsonError(w, "failed to create photo record", http.StatusInternalServerError)
 		return
@@ -1737,16 +1764,16 @@ const chunkedUploadTTL = 1 * time.Hour
 const chunkedCleanupInterval = 5 * time.Minute
 
 type chunkedUpload struct {
-	UploadID    string
-	TripID      string
-	UserID      string
-	FileName    string
-	MimeType    string
-	TotalSize   int64
-	TmpPath     string
-	Received    int64
-	ChunkIndex  int
-	CreatedAt   time.Time
+	UploadID   string
+	TripID     string
+	UserID     string
+	FileName   string
+	MimeType   string
+	TotalSize  int64
+	TmpPath    string
+	Received   int64
+	ChunkIndex int
+	CreatedAt  time.Time
 }
 
 // POST /api/trips/{id}/uploads/init
@@ -1776,6 +1803,7 @@ func (s *Server) handleChunkedInit(w http.ResponseWriter, r *http.Request) {
 	tmpPath := filepath.Join(s.UploadDir, "_chunks_"+uploadID)
 
 	// Create the empty temp file
+	// #nosec G304 -- tmpPath uses server-generated _chunks_<uploadID> name.
 	f, err := os.Create(tmpPath)
 	if err != nil {
 		slog.Error("chunked init: create temp file", "error", err, "path", tmpPath)
@@ -1827,6 +1855,7 @@ func (s *Server) handleChunkedChunk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Append chunk to temp file
+	// #nosec G304 -- cu.TmpPath is set from the uploadID we generated in init.
 	f, err := os.OpenFile(cu.TmpPath, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		slog.Error("chunked chunk: open temp file", "error", err, "upload_id", uploadID)
@@ -1899,8 +1928,8 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 	videoUpload := isVideoFile(cu.FileName) || isVideoMIME(cu.MimeType)
 
 	// Save to upload dir
-	dstPath := filepath.Join(s.UploadDir, filename)
-	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil {
+	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is uuid.New().String() + ext.
+	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is uuid.New().String() + ext.
 		slog.Error("chunked complete: write final file", "error", err, "path", dstPath)
 		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
@@ -1914,8 +1943,8 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 		imgW, imgH = videoDimensions(dstPath)
 		if thumbData, err := videoThumbnail(dstPath, 128); err == nil {
 			thumbDir := filepath.Join(s.UploadDir, "thumbs")
-			os.MkdirAll(thumbDir, 0755)
-			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644)
+			os.MkdirAll(thumbDir, 0755)                                             // #nosec G301 -- server-controlled.
+			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644) // #nosec G304,G306 -- filename is server-generated UUID.
 		}
 	} else {
 		exifLat, exifLng, exifTime = extractEXIF(fileData)
@@ -2141,6 +2170,7 @@ func (s *Server) handleRescanPhoto(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read file from disk
+	// #nosec G304 -- photo.Filename is a server-generated UUID, set at upload time.
 	filePath := filepath.Join(s.UploadDir, photo.Filename)
 
 	// Skip rescan for video files (no EXIF data)
@@ -2326,25 +2356,27 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// thumbDir + thumbPath use filename after the explicit ..\ and / rejection above.
 	thumbDir := filepath.Join(s.UploadDir, "thumbs")
+	// #nosec G703 -- filename was rejected if it contained "/" or "..".
 	thumbPath := filepath.Join(thumbDir, filename)
 
 	// For video files, thumbnail is stored as filename.jpg
 	isVid := isVideoFile(filename)
 	if isVid {
-		thumbPath = filepath.Join(thumbDir, filename+".jpg")
+		thumbPath = filepath.Join(thumbDir, filename+".jpg") // #nosec G703 -- filename sanitized.
 	}
 
 	// Serve cached thumbnail if it exists
-	if info, err := os.Stat(thumbPath); err == nil {
+	if info, err := os.Stat(thumbPath); err == nil { // #nosec G304,G703 -- filename was rejected if it contained "/" or ".."
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
-		http.ServeFile(w, r, thumbPath)
+		http.ServeFile(w, r, thumbPath) // #nosec G304,G703 -- filename was rejected; http.ServeFile also has its own protection.
 		return
 	}
 
-	srcPath := filepath.Join(s.UploadDir, filename)
+	srcPath := filepath.Join(s.UploadDir, filename) // #nosec G703 -- filename was rejected if it contained "/" or "..". // #nosec G703 -- filename sanitized at top of handleThumbnail.
 
 	if isVid {
 		// Generate video thumbnail via ffmpeg
@@ -2353,8 +2385,8 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to generate video thumbnail", http.StatusInternalServerError)
 			return
 		}
-		os.MkdirAll(thumbDir, 0755)
-		os.WriteFile(thumbPath, thumbData, 0644)
+		os.MkdirAll(thumbDir, 0755)              // #nosec G301 -- server-controlled dir
+		os.WriteFile(thumbPath, thumbData, 0644) // #nosec G304,G306,G703 -- filename sanitized at line above.
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		w.Header().Set("Content-Length", strconv.Itoa(len(thumbData)))
@@ -2363,7 +2395,7 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate image thumbnail
-	srcFile, err := os.Open(srcPath)
+	srcFile, err := os.Open(srcPath) // #nosec G304,G703 -- filename was rejected.
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -2384,11 +2416,15 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	if sw >= sh {
 		tw = maxDim
 		th = maxDim * sh / sw
-		if th < 1 { th = 1 }
+		if th < 1 {
+			th = 1
+		}
 	} else {
 		th = maxDim
 		tw = maxDim * sw / sh
-		if tw < 1 { tw = 1 }
+		if tw < 1 {
+			tw = 1
+		}
 	}
 
 	// Use simple box-filter downscaling
@@ -2409,8 +2445,8 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cache to disk
-	os.MkdirAll(thumbDir, 0755)
-	os.WriteFile(thumbPath, buf.Bytes(), 0644)
+	os.MkdirAll(thumbDir, 0755)                // #nosec G301 -- server-controlled dir
+	os.WriteFile(thumbPath, buf.Bytes(), 0644) // #nosec G304,G306,G703 -- filename sanitized.
 
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")

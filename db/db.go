@@ -90,7 +90,10 @@ func normalizeTimestamps(db *sql.DB) error {
 
 	var totalFixed int
 	for _, c := range cols {
-		query := fmt.Sprintf(
+		// SECURITY: c.pk / c.col / c.table are interpolated from a hardcoded
+		// slice above; no user input is ever reachable in these positions.
+		// The user-supplied values (f.val, f.pk) are parameterized with ?.
+		query := fmt.Sprintf( // #nosec G201 -- table/col/pk are hardcoded; values parameterized via ?
 			"SELECT %s, %s FROM %s WHERE %s IS NOT NULL AND (%s LIKE '%%m=%%' OR %s LIKE '%% -____ -____' OR %s LIKE '%% +____ ____')",
 			c.pk, c.col, c.table, c.col, c.col, c.col, c.col,
 		)
@@ -119,7 +122,9 @@ func normalizeTimestamps(db *sql.DB) error {
 		rows.Close()
 
 		for _, f := range fixes {
-			upd := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s = ?", c.table, c.col, c.pk)
+			// SECURITY: same as above — c.table/c.col/c.pk are hardcoded; values
+			// are parameterized via ?.
+			upd := fmt.Sprintf("UPDATE %s SET %s = ? WHERE %s = ?", c.table, c.col, c.pk) // #nosec G201 -- table/col/pk hardcoded; values parameterized
 			if _, err := db.Exec(upd, f.val, f.pk); err == nil {
 				totalFixed++
 			}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,10 +55,10 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type logEntry struct {
-	Time     string `json:"time"`
-	Level    string `json:"level"`
-	Msg      string `json:"msg"`
-	Raw      string `json:"raw"`
+	Time  string `json:"time"`
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
+	Raw   string `json:"raw"`
 }
 
 func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
@@ -100,8 +101,17 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 	var entries []logEntry
 
 	if date != "" {
-		logPath := filepath.Join(logDir, date+".log")
-		data, err := os.ReadFile(logPath)
+		// Strict date validation: only YYYY-MM-DD. The admin UI sends a
+		// date picker value, but an attacker with admin access could
+		// otherwise inject path separators into this query param. We
+		// refuse anything that doesn't match the expected format rather
+		// than rely on the logDir containment.
+		if matched, _ := regexp.MatchString(`^\d{4}-\d{2}-\d{2}$`, date); !matched {
+			jsonError(w, "date must be YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		logPath := filepath.Join(logDir, date+".log") // #nosec G703 -- date is regex-validated above (line 109).
+		data, err := os.ReadFile(logPath)             // #nosec G304,G703 -- date is regex-validated above; ReadFile is bounded by logDir.
 		if err == nil {
 			lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 			// Read from the end (most recent first)
@@ -279,12 +289,12 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 type uploadStats struct {
-	TotalFiles     int    `json:"total_files"`
-	TotalSizeBytes int64  `json:"total_size_bytes"`
-	TotalSizeHuman string `json:"total_size_human"`
-	PhotoFiles     int    `json:"photo_files"`
-	VideoFiles     int    `json:"video_files"`
-	ThumbFiles     int    `json:"thumb_files"`
+	TotalFiles     int      `json:"total_files"`
+	TotalSizeBytes int64    `json:"total_size_bytes"`
+	TotalSizeHuman string   `json:"total_size_human"`
+	PhotoFiles     int      `json:"photo_files"`
+	VideoFiles     int      `json:"video_files"`
+	ThumbFiles     int      `json:"thumb_files"`
 	OrphanFiles    []string `json:"orphan_files"`
 	MissingFiles   []string `json:"missing_files"`
 }
@@ -388,15 +398,15 @@ func humanBytes(b int64) string {
 // ---------------------------------------------------------------------------
 
 type dbStats struct {
-	Trips      int    `json:"trips"`
-	Stops      int    `json:"stops"`
-	Photos     int    `json:"photos"`
-	Videos     int    `json:"videos"`
-	Comments   int    `json:"comments"`
-	Routes     int    `json:"routes"`
-	Sessions   int    `json:"sessions"`
-	Visitors   int    `json:"visitors"`
-	DBSize     int64  `json:"db_size_bytes"`
+	Trips       int    `json:"trips"`
+	Stops       int    `json:"stops"`
+	Photos      int    `json:"photos"`
+	Videos      int    `json:"videos"`
+	Comments    int    `json:"comments"`
+	Routes      int    `json:"routes"`
+	Sessions    int    `json:"sessions"`
+	Visitors    int    `json:"visitors"`
+	DBSize      int64  `json:"db_size_bytes"`
 	DBSizeHuman string `json:"db_size_human"`
 }
 
@@ -625,6 +635,7 @@ func (s *Server) handleAdminImpersonate(w http.ResponseWriter, r *http.Request) 
 		MaxAge:   3600, // 1 hour
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   proto(r) == "https",
 	})
 
 	jsonOK(w, map[string]any{"ok": true, "impersonating": body.Email})
@@ -644,6 +655,7 @@ func (s *Server) handleAdminStopImpersonate(w http.ResponseWriter, r *http.Reque
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   proto(r) == "https",
 	})
 
 	jsonOK(w, map[string]any{"ok": true})

@@ -25,8 +25,8 @@ type googleClaims struct {
 
 // Google endpoints
 const (
-	googleCertsURL = "https://www.googleapis.com/oauth2/v3/certs"
-	googleTokenURL = "https://oauth2.googleapis.com/token"
+	googleCertsURL = "https://www.googleapis.com/oauth2/v3/certs" // #nosec G101 -- URL constant, not a credential.
+	googleTokenURL = "https://oauth2.googleapis.com/token"        // #nosec G101 -- URL constant, not a credential.
 )
 
 // googleTokenResponse is the response from Google's token endpoint.
@@ -42,17 +42,19 @@ func exchangeGoogleCode(ctx context.Context, code, clientID, clientSecret, redir
 		"&redirect_uri=" + redirectURI +
 		"&grant_type=authorization_code"
 
+	// #nosec G704 -- googleTokenURL is a hardcoded constant, not user input.
 	req, err := http.NewRequestWithContext(ctx, "POST", googleTokenURL, strings.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
+	// #nosec G704 -- googleTokenURL is a hardcoded constant; Do(req) just dispatches it.
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() // #nosec G104 -- best-effort close
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
