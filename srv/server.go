@@ -2,6 +2,7 @@ package srv
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"encoding/xml"
@@ -408,6 +409,13 @@ func (s *Server) Serve(addr string) error {
 	if len(s.redirects) > 0 {
 		handler = s.redirectMiddleware(handler)
 	}
+
+	// Background cleanup of abandoned chunked uploads. Cancelled when Serve
+	// returns (which happens when http.ListenAndServe exits).
+	cleanupCtx, cancelCleanup := context.WithCancel(context.Background())
+	defer cancelCleanup()
+	go s.cleanupAbandonedUploads(cleanupCtx)
+
 	return http.ListenAndServe(addr, requestLogger(handler))
 }
 
@@ -1549,9 +1557,19 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	jsonCreated(w, photo)
 }
 
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------
 // Chunked upload: init / chunk / complete
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------
+
+// chunkedUploadTTL is how long an in-progress chunked upload is kept in memory
+// and on disk before the cleanup goroutine considers it abandoned and removes
+// it. Generous enough to cover slow mobile connections uploading large videos,
+// short enough that a malicious or buggy client can't pile up unbounded state.
+const chunkedUploadTTL = 1 * time.Hour
+
+// chunkedCleanupInterval is how often the cleanup goroutine scans for
+// abandoned uploads. The scan itself is O(n) over chunkedUploads and cheap.
+const chunkedCleanupInterval = 5 * time.Minute
 
 type chunkedUpload struct {
 	UploadID    string
@@ -1785,6 +1803,72 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonCreated(w, photo)
+}
+
+// cleanupAbandonedUploads runs in its own goroutine for the lifetime of
+// Serve. Every chunkedCleanupInterval it scans chunkedUploads, removes any
+// entry older than chunkedUploadTTL, and deletes the corresponding temp
+// file from disk. Without this, a client that crashes between /init and
+// /complete would leak a map entry AND a temp file at uploads/_chunks_<uuid>
+// forever, eventually filling memory and disk.
+//
+// The scan is O(n) over the map; file deletion happens outside the mutex
+// so a slow filesystem can't stall request handlers. os.Remove errors are
+// logged and ignored (file already gone, permission denied on a
+// non-critical file, etc.) — never panic, never block the loop.
+func (s *Server) cleanupAbandonedUploads(ctx context.Context) {
+	ticker := time.NewTicker(chunkedCleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.evictExpiredChunkedUploads(now)
+		}
+	}
+}
+
+// evictExpiredChunkedUploads is split out so tests can call it directly
+// without spinning up a ticker. Returns the number of entries evicted
+// (useful for assertions).
+func (s *Server) evictExpiredChunkedUploads(now time.Time) int {
+	cutoff := now.Add(-chunkedUploadTTL)
+
+	// Snapshot expired entries under the lock, then do file IO outside it.
+	s.chunkedMu.Lock()
+	type expired struct {
+		id      string
+		tmpPath string
+	}
+	var victims []expired
+	for id, cu := range s.chunkedUploads {
+		if cu.CreatedAt.Before(cutoff) {
+			victims = append(victims, expired{id: id, tmpPath: cu.TmpPath})
+		}
+	}
+	for _, v := range victims {
+		delete(s.chunkedUploads, v.id)
+	}
+	s.chunkedMu.Unlock()
+
+	for _, v := range victims {
+		if err := os.Remove(v.tmpPath); err != nil && !os.IsNotExist(err) {
+			slog.Warn("chunked cleanup: remove temp file",
+				"upload_id", v.id,
+				"path", v.tmpPath,
+				"error", err,
+			)
+			continue
+		}
+		slog.Info("chunked cleanup: evicted abandoned upload",
+			"upload_id", v.id,
+			"path", v.tmpPath,
+		)
+	}
+
+	return len(victims)
 }
 
 func (s *Server) handleUpdatePhoto(w http.ResponseWriter, r *http.Request) {

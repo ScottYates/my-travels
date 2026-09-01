@@ -908,3 +908,98 @@ func postJSON(t *testing.T, client *http.Client, url string, body any, dst any) 
 }
 
 // (no helper assertions needed; tests are direct)
+
+// TestEvictExpiredChunkedUploads verifies the cleanup pass removes abandoned
+// uploads (older than chunkedUploadTTL), deletes their on-disk temp files,
+// and leaves fresh uploads alone. Regression test for the leak where a
+// client that crashes between /init and /complete would otherwise leave a
+// map entry + a temp file at uploads/_chunks_<uuid> forever.
+func TestEvictExpiredChunkedUploads(t *testing.T) {
+	s, _, _ := newTestServer(t)
+
+	now := time.Now()
+
+	// Old entry: created 2 hours ago, beyond chunkedUploadTTL (1h).
+	// Fresh entry: created 5 minutes ago, still valid.
+	oldTmpPath := filepath.Join(s.UploadDir, "_chunks_oldid")
+	freshTmpPath := filepath.Join(s.UploadDir, "_chunks_freshid")
+
+	// Pre-create the temp files so we can verify deletion.
+	if err := os.WriteFile(oldTmpPath, []byte("abandoned"), 0o644); err != nil {
+		t.Fatalf("write old tmp: %v", err)
+	}
+	if err := os.WriteFile(freshTmpPath, []byte("in progress"), 0o644); err != nil {
+		t.Fatalf("write fresh tmp: %v", err)
+	}
+
+	s.chunkedMu.Lock()
+	s.chunkedUploads["oldid"] = &chunkedUpload{
+		UploadID:  "oldid",
+		TmpPath:   oldTmpPath,
+		CreatedAt: now.Add(-2 * time.Hour),
+	}
+	s.chunkedUploads["freshid"] = &chunkedUpload{
+		UploadID:  "freshid",
+		TmpPath:   freshTmpPath,
+		CreatedAt: now.Add(-5 * time.Minute),
+	}
+	s.chunkedMu.Unlock()
+
+	evicted := s.evictExpiredChunkedUploads(now)
+	if evicted != 1 {
+		t.Errorf("evicted = %d, want 1", evicted)
+	}
+
+	// Old entry should be gone from the map.
+	s.chunkedMu.Lock()
+	_, oldStillThere := s.chunkedUploads["oldid"]
+	_, freshStillThere := s.chunkedUploads["freshid"]
+	s.chunkedMu.Unlock()
+	if oldStillThere {
+		t.Error("old upload still in chunkedUploads map")
+	}
+	if !freshStillThere {
+		t.Error("fresh upload was incorrectly evicted")
+	}
+
+	// Old temp file should be deleted; fresh one should remain.
+	if _, err := os.Stat(oldTmpPath); !os.IsNotExist(err) {
+		t.Errorf("old tmp file still on disk: %v", err)
+	}
+	if _, err := os.Stat(freshTmpPath); err != nil {
+		t.Errorf("fresh tmp file missing: %v", err)
+	}
+}
+
+// TestEvictExpiredChunkedUploads_MissingFile verifies the cleanup pass
+// tolerates a missing temp file (e.g. operator deleted it manually, or
+// disk was full at write time) without panicking or failing the loop.
+func TestEvictExpiredChunkedUploads_MissingFile(t *testing.T) {
+	s, _, _ := newTestServer(t)
+
+	now := time.Now()
+
+	// Entry whose temp file never existed on disk.
+	missingPath := filepath.Join(s.UploadDir, "_chunks_ghostid")
+
+	s.chunkedMu.Lock()
+	s.chunkedUploads["ghostid"] = &chunkedUpload{
+		UploadID:  "ghostid",
+		TmpPath:   missingPath,
+		CreatedAt: now.Add(-2 * time.Hour),
+	}
+	s.chunkedMu.Unlock()
+
+	// Should not panic, should still evict the map entry.
+	evicted := s.evictExpiredChunkedUploads(now)
+	if evicted != 1 {
+		t.Errorf("evicted = %d, want 1", evicted)
+	}
+
+	s.chunkedMu.Lock()
+	_, stillThere := s.chunkedUploads["ghostid"]
+	s.chunkedMu.Unlock()
+	if stillThere {
+		t.Error("ghost upload still in map after eviction")
+	}
+}
