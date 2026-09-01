@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/time/rate"
 	"srv.exe.dev/db/dbgen"
 )
 
@@ -1066,5 +1067,192 @@ func TestSanitiseTripTitleForFilename(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestContainsURL covers the URL-detection rules used to reject spammy
+// comments. The goal is "reject the obvious" — common spam patterns like
+// http(s)://, www., .com/, .net/, etc. — not to be a complete URL parser.
+//
+// Regression test for audit issue #3 (URL rejection).
+func TestContainsURL(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		// Plain text — not a URL.
+		{"plain text", "Hello, this is a nice photo!", false},
+		{"punctuation only", "Great trip! Loved every stop :)", false},
+		{"no link", "see ya next year", false},
+		{"empty", "", false},
+
+		// Schemes — caught.
+		{"http lowercase", "check out http://example.com", true},
+		{"https lowercase", "see https://example.com/path", true},
+		{"http uppercase", "HTTP://EXAMPLE.COM", true},
+		{"https mixed case", "Https://Example.Com", true},
+		{"ftp", "mirror at ftp://files.example.com/", true},
+		{"protocol-relative //", "see //cdn.example.com/img.jpg", true},
+
+		// www. prefix — caught.
+		{"www with path", "go to www.example.com/path", true},
+		{"www bare", "visit www.example.com", true},
+
+		// Bare domain with TLD + path/space — caught.
+		{".com/", "look at example.com/page", true},
+		{".com with space", "see example.com for more", true},
+		{".com with period", "example.com. really cool", true},
+		{".net/", "visit example.net/path", true},
+		{".org/", "see example.org/about", true},
+		{".io/", "check example.io/post", true},
+
+		// Bare domain with TLD at end of string — NOT caught (would
+		// false-positive on "I went to japan.com last year"). Spammers
+		// don't usually put bare TLD-only at end; they add paths.
+		{"bare .com at end", "I bought it from example.com", false},
+		{"bare .net at end", "migrated to example.net", false},
+		{"bare .org at end", "hosted at example.org", false},
+
+		// Mixed cases / obfuscation attempts — caught.
+		{"URL in author", "http://scammer.example", true},
+		{"link in body", "see https://scam.example/path for details", true},
+		{"uppercase scheme", "VISIT HTTPS://EXAMPLE.COM", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := containsURL(tt.in); got != tt.want {
+				t.Errorf("containsURL(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClientIP covers the IP-extraction helper used by the rate limiter.
+func TestClientIP(t *testing.T) {
+	tests := []struct {
+		name       string
+		xff        string
+		remoteAddr string
+		want       string
+	}{
+		{
+			name:       "no XFF, plain remote",
+			remoteAddr: "192.0.2.1:12345",
+			want:       "192.0.2.1",
+		},
+		{
+			name:       "single XFF hop",
+			xff:        "203.0.113.5",
+			remoteAddr: "10.0.0.1:80",
+			want:       "203.0.113.5",
+		},
+		{
+			name:       "XFF with multiple hops — use first",
+			xff:        "203.0.113.5, 198.51.100.1, 10.0.0.1",
+			remoteAddr: "10.0.0.99:80",
+			want:       "203.0.113.5",
+		},
+		{
+			name:       "XFF with surrounding whitespace",
+			xff:        "  203.0.113.5  ,  198.51.100.1",
+			remoteAddr: "10.0.0.99:80",
+			want:       "203.0.113.5",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/test", nil)
+			if tt.xff != "" {
+				r.Header.Set("X-Forwarded-For", tt.xff)
+			}
+			r.RemoteAddr = tt.remoteAddr
+			if got := clientIP(r); got != tt.want {
+				t.Errorf("clientIP() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCheckPublicCommentRateLimit verifies the per-IP token bucket blocks
+// after the burst allowance is consumed and lets legitimate spaced-out
+// requests through.
+//
+// Regression test for audit issue #3 (rate limit).
+func TestCheckPublicCommentRateLimit(t *testing.T) {
+	s, _, _ := newTestServer(t)
+
+	// Build a request that looks like it came from the same client every time.
+	mkReq := func() *http.Request {
+		r := httptest.NewRequest("POST", "/test", nil)
+		r.RemoteAddr = "198.51.100.7:54321"
+		return r
+	}
+
+	// publicCommentBurst is 5 — first 5 calls in immediate succession
+	// should pass; the 6th should be rate-limited.
+	for i := 0; i < publicCommentBurst; i++ {
+		if !s.checkPublicCommentRateLimit(mkReq()) {
+			t.Errorf("call %d: should be allowed (within burst)", i+1)
+		}
+	}
+	// publicCommentBurst+1 — must be blocked.
+	if s.checkPublicCommentRateLimit(mkReq()) {
+		t.Errorf("call %d: should be rate-limited (burst exhausted)", publicCommentBurst+1)
+	}
+
+	// A different IP should still get its own full burst.
+	mkOtherReq := func() *http.Request {
+		r := httptest.NewRequest("POST", "/test", nil)
+		r.RemoteAddr = "198.51.100.99:54321"
+		return r
+	}
+	if !s.checkPublicCommentRateLimit(mkOtherReq()) {
+		t.Error("different IP should get its own burst")
+	}
+
+	// Verify a limiter entry was actually recorded for the first IP.
+	s.commentLimiterMu.Lock()
+	if _, ok := s.commentLimiters["198.51.100.7"]; !ok {
+		s.commentLimiterMu.Unlock()
+		t.Error("first IP not present in commentLimiters map")
+	} else {
+		s.commentLimiterMu.Unlock()
+	}
+}
+
+// TestPruneCommentLimiters verifies dormant per-IP limiter entries are
+// evicted after commentLimiterTTL.
+func TestPruneCommentLimiters(t *testing.T) {
+	s, _, _ := newTestServer(t)
+
+	// Manually populate an entry with an old lastSeen.
+	s.commentLimiterMu.Lock()
+	s.commentLimiters["203.0.113.1"] = &commentLimiterEntry{
+		limiter:  rate.NewLimiter(publicCommentRateLimit, publicCommentBurst),
+		lastSeen: time.Now().Add(-2 * commentLimiterTTL),
+	}
+	s.commentLimiters["203.0.113.2"] = &commentLimiterEntry{
+		limiter:  rate.NewLimiter(publicCommentRateLimit, publicCommentBurst),
+		lastSeen: time.Now(),
+	}
+	s.commentLimiterMu.Unlock()
+
+	cutoff := time.Now().Add(-commentLimiterTTL)
+	_ = cutoff
+	s.pruneCommentLimiters()
+
+	s.commentLimiterMu.Lock()
+	_, oldStillThere := s.commentLimiters["203.0.113.1"]
+	_, freshStillThere := s.commentLimiters["203.0.113.2"]
+	s.commentLimiterMu.Unlock()
+
+	// Old entry should be GONE — value ok=false means the key isn't in
+	// the map anymore, which is what we want after the prune.
+	if oldStillThere {
+		t.Error("old limiter entry was not pruned")
+	}
+	if !freshStillThere {
+		t.Error("recent limiter entry was incorrectly pruned")
 	}
 }

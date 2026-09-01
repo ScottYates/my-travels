@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rwcarlsen/goexif/exif"
+	"golang.org/x/time/rate"
 	"srv.exe.dev/db"
 	"srv.exe.dev/db/dbgen"
 )
@@ -47,6 +48,21 @@ type Server struct {
 	chunkedUploads map[string]*chunkedUpload
 
 	redirects map[string]string // path → target URL
+
+	// Public-comment rate limiter. Keyed by client IP, each entry is a
+	// per-IP token bucket. New entries are created lazily; old entries
+	// are pruned by the cleanup goroutine (see commentLimiterCleanup).
+	commentLimiterMu      sync.Mutex
+	commentLimiters       map[string]*commentLimiterEntry
+	commentLimiterCleanup time.Time
+}
+
+// commentLimiterEntry tracks a single client's rate-limit state plus when
+// it was last touched, so the cleanup goroutine can evict dormant entries
+// without holding a reference forever.
+type commentLimiterEntry struct {
+	limiter   *rate.Limiter
+	lastSeen  time.Time
 }
 
 // JSON response helpers
@@ -70,6 +86,120 @@ func jsonCreated(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(data)
+}
+
+// -------------------------------------------------------------------
+// Public-comment rate limit (audit issue #3, partial fix)
+// -------------------------------------------------------------------
+
+// publicCommentRateLimit is the steady-state per-IP rate for the public
+// comment endpoints (POST /api/share/.../comments and POST /api/present/...
+// /comments). 3/min is generous for real human use but stops a single IP
+// from flooding the comment table.
+const publicCommentRateLimit = rate.Limit(3.0 / 60.0)
+
+// publicCommentBurst is how many comment requests a single IP can fire in
+// immediate succession before the steady-state rate kicks in. 5 covers a
+// person rapidly typing & submitting multiple comments; anything beyond is
+// almost certainly automation.
+const publicCommentBurst = 5
+
+// commentLimiterTTL is how long an inactive per-IP limiter entry is kept
+// before eviction. Generous (1 hour) so a returning user doesn't get a
+// fresh burst.
+const commentLimiterTTL = 1 * time.Hour
+
+// clientIP extracts the originating client IP from X-Forwarded-For (first
+// hop) or falls back to RemoteAddr. The header is trusted as-is here —
+// this app is deployed behind a trusted reverse proxy. If that ever
+// changes, add a hop-count or trusted-proxy check.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if comma := strings.IndexByte(xff, ','); comma >= 0 {
+			return strings.TrimSpace(xff[:comma])
+		}
+		return strings.TrimSpace(xff)
+	}
+	// r.RemoteAddr is host:port — strip the port.
+	if idx := strings.LastIndexByte(r.RemoteAddr, ':'); idx >= 0 {
+		return r.RemoteAddr[:idx]
+	}
+	return r.RemoteAddr
+}
+
+// checkPublicCommentRateLimit returns true if the request is allowed
+// through, false if the IP is being rate-limited. The token bucket is
+// per-IP and lazily created; old entries are pruned by
+// pruneCommentLimiters (called on every 100th access to amortize cost).
+func (s *Server) checkPublicCommentRateLimit(r *http.Request) bool {
+	ip := clientIP(r)
+
+	s.commentLimiterMu.Lock()
+	defer s.commentLimiterMu.Unlock()
+
+	entry, ok := s.commentLimiters[ip]
+	if !ok {
+		entry = &commentLimiterEntry{
+			limiter: rate.NewLimiter(publicCommentRateLimit, publicCommentBurst),
+		}
+		s.commentLimiters[ip] = entry
+	}
+	entry.lastSeen = time.Now()
+
+	// Cheap amortized prune: every ~100th call (when the map is big
+	// enough to matter), sweep dormant entries in a separate goroutine
+	// so the hot path stays fast.
+	if len(s.commentLimiters) > 64 && time.Since(s.commentLimiterCleanup) > time.Minute {
+		s.commentLimiterCleanup = time.Now()
+		go s.pruneCommentLimiters()
+	}
+
+	return entry.limiter.Allow()
+}
+
+// pruneCommentLimiters evicts entries that haven't been touched in
+// commentLimiterTTL. Runs in its own goroutine so the hot path stays fast.
+func (s *Server) pruneCommentLimiters() {
+	cutoff := time.Now().Add(-commentLimiterTTL)
+
+	s.commentLimiterMu.Lock()
+	defer s.commentLimiterMu.Unlock()
+
+	for ip, entry := range s.commentLimiters {
+		if entry.lastSeen.Before(cutoff) {
+			delete(s.commentLimiters, ip)
+		}
+	}
+}
+
+// containsURL returns true if s looks like it contains a URL. We catch
+// the common spam patterns without trying to be an exhaustive URL
+// parser: a "://" anywhere, a leading "www.", or a known TLD followed
+// by a path-like character. False positives are possible (e.g. "see
+// the .io site") but that's an acceptable cost for spam prevention.
+//
+// We do NOT try to be clever about IP addresses or "dot" obfuscation —
+// spammers use those too. The goal is "reject the obvious", not "catch
+// every spam URL forever".
+func containsURL(s string) bool {
+	lower := strings.ToLower(s)
+	// Schemes — http://, https://, ftp://, etc.
+	for _, scheme := range []string{"://", "http:", "https:", "ftp://"} {
+		if strings.Contains(lower, scheme) {
+			return true
+		}
+	}
+	// www. prefix.
+	if strings.Contains(lower, "www.") {
+		return true
+	}
+	// Bare domains with a path-like or TLD-followed character.
+	for _, tld := range []string{".com/", ".com.", ".com ", ".net/", ".net ", ".org/", ".org ", ".io/", ".ly/", ".me/"} {
+		if strings.Contains(lower, tld) {
+			return true
+		}
+	}
+	return false
 }
 
 // New creates a new Server, initializes the database, and ensures the upload directory exists.
@@ -114,13 +244,14 @@ func New(dbPath, hostname, googleClientID, googleClientSecret, adminEmail, baseD
 	srv := &Server{
 		Hostname:           hostname,
 		UploadDir:          uploadDir,
-		TemplatesDir:       templatesDir,
 		StaticDir:          staticDir,
+		TemplatesDir:       templatesDir,
 		GoogleClientID:     googleClientID,
 		GoogleClientSecret: googleClientSecret,
 		AdminEmail:         adminEmail,
 		chunkedUploads:     make(map[string]*chunkedUpload),
-		redirects:         loadRedirects(baseDir),
+		redirects:          loadRedirects(baseDir),
+		commentLimiters:    make(map[string]*commentLimiterEntry),
 	}
 	if err := srv.setUpDatabase(dbPath); err != nil {
 		return nil, err
@@ -1084,6 +1215,12 @@ func (s *Server) resolveTripBySlugOrShareID(r *http.Request, slug string) (dbgen
 }
 
 func (s *Server) handleCreateCommentByPresent(w http.ResponseWriter, r *http.Request) {
+	if !s.checkPublicCommentRateLimit(r) {
+		slog.Warn("comment rate limit hit", "path", r.URL.Path, "ip", clientIP(r))
+		jsonError(w, "rate limit exceeded — try again later", http.StatusTooManyRequests)
+		return
+	}
+
 	slug := r.PathValue("slug")
 	photoID := r.PathValue("photoID")
 	ctx := r.Context()
@@ -2711,6 +2848,12 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateCommentByShare(w http.ResponseWriter, r *http.Request) {
+	if !s.checkPublicCommentRateLimit(r) {
+		slog.Warn("comment rate limit hit", "path", r.URL.Path, "ip", clientIP(r))
+		jsonError(w, "rate limit exceeded — try again later", http.StatusTooManyRequests)
+		return
+	}
+
 	shareID := r.PathValue("shareID")
 	photoID := r.PathValue("photoID")
 	ctx := r.Context()
@@ -2773,6 +2916,14 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request, tripID, p
 	}
 	if len(body.Body) > 500 {
 		body.Body = body.Body[:500]
+	}
+
+	// Reject URLs in author or body. Spammers put links in both fields
+	// even though the body is the obvious one — covering both keeps
+	// the rule simple and closes the "put it in author" workaround.
+	if containsURL(body.Author) || containsURL(body.Body) {
+		jsonError(w, "comments may not contain links", http.StatusBadRequest)
+		return
 	}
 
 	id := uuid.New().String()
@@ -2844,6 +2995,13 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(body.Body) > 500 {
 		body.Body = body.Body[:500]
+	}
+
+	// Same URL rejection as create — keeps the rule consistent regardless
+	// of whether the comment is being created or edited.
+	if containsURL(body.Author) || containsURL(body.Body) {
+		jsonError(w, "comments may not contain links", http.StatusBadRequest)
+		return
 	}
 
 	if err := q.UpdateComment(r.Context(), dbgen.UpdateCommentParams{
