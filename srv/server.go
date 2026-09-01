@@ -416,7 +416,35 @@ func (s *Server) Serve(addr string) error {
 	defer cancelCleanup()
 	go s.cleanupAbandonedUploads(cleanupCtx)
 
-	return http.ListenAndServe(addr, requestLogger(handler))
+	// http.Server with explicit timeouts. http.ListenAndServe uses defaults
+	// of zero, which leaves the server vulnerable to Slowloris-style
+	// attacks (a client opening a connection and dribbling bytes very
+	// slowly to hold resources forever).
+	//
+	// ReadHeaderTimeout is the Slowloris guard: it bounds how long the
+	// client has to send request headers. 10s is plenty for any real
+	// client; a malicious one gets cut off before it can do anything.
+	//
+	// ReadTimeout and WriteTimeout are intentionally zero (no per-byte
+	// deadline) because legitimate handlers do their own bounding:
+	//   - Photo uploads cap body size via http.MaxBytesReader (200 MB).
+	//   - Trip imports cap body size via http.MaxBytesReader (8 GB).
+	//   - SSE (resort-photos) needs to stream indefinitely; it detects
+	//     client disconnect via r.Context().Done().
+	// Setting a global WriteTimeout here would silently break SSE.
+	//
+	// IdleTimeout closes keepalive connections that sit idle for too long.
+	// 120s is conservative — typical clients re-use connections well
+	// within that window, and idle attackers don't keep sending bytes so
+	// ReadHeaderTimeout doesn't catch them.
+	return (&http.Server{
+		Addr:              addr,
+		Handler:           requestLogger(handler),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       0,
+		WriteTimeout:      0,
+		IdleTimeout:       120 * time.Second,
+	}).ListenAndServe()
 }
 
 // csrfCheck is middleware that rejects cross-origin state-changing requests

@@ -16,6 +16,46 @@ import (
 	"srv.exe.dev/db/dbgen"
 )
 
+// sanitiseTripTitleForFilename makes a trip title safe to use as a filename
+// AND embed in an HTTP header value.
+//
+// Step 1 (security-critical): reject any rune that isn't a printable ASCII
+// character. This kills CR/LF/NUL and any non-ASCII bytes that could be
+// used to:
+//   - inject CRLF into a header value (HTTP response splitting)
+//   - smuggle unicode lookalikes through filename comparisons downstream
+//
+// Step 2 (filesystem hygiene): replace characters that are illegal or
+// annoying in filenames on at least one common OS (Windows is the
+// strictest) with '-'. The replacement is conservative — anything
+// outside [A-Za-z0-9._ -] is replaced, which keeps the resulting name
+// portable and avoids surprises when the recipient unzips on Windows.
+//
+// Returns "" if the input had no usable characters; callers should
+// substitute a fixed fallback (e.g. "trip") in that case.
+func sanitiseTripTitleForFilename(title string) string {
+	// Step 1: printable ASCII only.
+	ascii := strings.Map(func(r rune) rune {
+		if r >= 0x20 && r <= 0x7E {
+			return r
+		}
+		return -1 // drop
+	}, title)
+
+	// Step 2: filesystem-safe characters only.
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z',
+			r >= 'a' && r <= 'z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-', r == ' ':
+			return r
+		default:
+			return '-'
+		}
+	}, ascii)
+}
+
 // ---------------------------------------------------------------------------
 // Backup / Restore (export & import) for trips
 // ---------------------------------------------------------------------------
@@ -78,13 +118,17 @@ func (s *Server) handleExportTrip(w http.ResponseWriter, r *http.Request) {
 		Comments:   comments,
 	}
 
-	// Sanitise the trip title for use as a filename.
-	safeTitle := strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' || r == ':' || r == '"' || r == '\'' || r == '?' || r == '*' || r == '<' || r == '>' || r == '|' {
-			return '-'
-		}
-		return r
-	}, trip.Title)
+	// Sanitise the trip title for use as a filename AND a header value.
+	// Two layers of defense:
+	//   1. Strip characters that are illegal in HTTP header values
+	//      (anything outside printable ASCII, including CR/LF/NUL — these
+	//      would let an attacker inject headers or split the response).
+	//   2. Strip characters that are illegal in filenames on Windows /
+	//      macOS / common Unix filesystems.
+	// The first layer is the security-critical one; the second is just
+	// for cross-platform sanity (the zip is opened on whichever OS the
+	// recipient uses).
+	safeTitle := sanitiseTripTitleForFilename(trip.Title)
 	if safeTitle == "" {
 		safeTitle = "trip"
 	}

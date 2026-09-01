@@ -1003,3 +1003,68 @@ func TestEvictExpiredChunkedUploads_MissingFile(t *testing.T) {
 		t.Error("ghost upload still in map after eviction")
 	}
 }
+
+// TestSanitiseTripTitleForFilename covers the two layers of sanitisation:
+//   1. Strip non-printable / control characters (HTTP response splitting).
+//   2. Replace filesystem-hostile characters with '-'.
+// Regression test for audit issue #7 — Content-Disposition header injection.
+func TestSanitiseTripTitleForFilename(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// Plain ASCII passes through unchanged.
+		{"plain ascii", "Hawaii 2025", "Hawaii 2025"},
+		{"with allowed punctuation", "Trip_v2.0 - notes", "Trip_v2.0 - notes"},
+
+		// CR / LF / NUL / other control bytes get stripped (security).
+		// Note: after stripping CRLF, ':' and '=' fall through the printable
+		// ASCII check but are NOT in the filesystem-safe set [A-Za-z0-9._ -],
+		// so step 2 replaces them with '-'. That's correct — we don't want
+		// ':' or '=' in filenames anyway, and certainly not in headers.
+		{"CRLF injection", "Hawaii\r\nSet-Cookie: x=y", "HawaiiSet-Cookie- x-y"},
+		{"lone CR", "Trip\rName", "TripName"},
+		{"lone LF", "Trip\nName", "TripName"},
+		{"NUL byte", "Trip\x00Name", "TripName"},
+		{"DEL char", "Trip\x7fName", "TripName"},
+
+		// Non-ASCII gets stripped (defense against unicode lookalike attacks).
+		{"emoji", "Hawaii 🌺 2025", "Hawaii  2025"},
+		{"cyrillic lookalike", "Нawaii 2025", "awaii 2025"},
+
+		// Filesystem-hostile chars get replaced with '-'.
+		{"forward slash", "2025/Q2", "2025-Q2"},
+		{"backslash", "2025\\Q2", "2025-Q2"},
+		{"colon", "12:30 Hawaii", "12-30 Hawaii"},
+		{"question mark", "what?", "what-"},
+		{"asterisk", "star*trip", "star-trip"},
+		{"angle brackets", "<hawaii>", "-hawaii-"},
+		{"pipe", "left|right", "left-right"},
+		{"double quote", `say "hi"`, "say -hi-"},
+		{"single quote", "don't go", "don-t go"},
+
+		// Everything-stripped → empty.
+		{"all control bytes", "\x00\x01\x02", ""},
+		{"all non-ASCII", "🌺🌺🌺", ""},
+
+		// Combination: control bytes + filesystem chars.
+		{"mixed nastiness", "Trip\r\n2025/Q2*", "Trip2025-Q2-"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitiseTripTitleForFilename(tt.in)
+			if got != tt.want {
+				t.Errorf("sanitiseTripTitleForFilename(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+			// Defence-in-depth: even if the expected value were wrong, the
+			// output must be safe to embed in a header (no CR, LF, NUL, or
+			// non-printable bytes).
+			for _, r := range got {
+				if r < 0x20 || r > 0x7E {
+					t.Errorf("result %q contains unsafe rune %q (U+%04X)", got, r, r)
+				}
+			}
+		})
+	}
+}
