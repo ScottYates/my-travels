@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,7 +30,23 @@ func run() error {
 	logDir := os.Getenv("LOG_DIR")
 	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
 	googleClientSecret := os.Getenv("GOOGLE_CLIENT_SECRET")
-	adminEmail := envDefault("ADMIN_EMAIL", "beernutz@gmail.com")
+	// No built-in default: an instance has an admin only if ADMIN_EMAIL
+	// is set.
+	adminEmail := os.Getenv("ADMIN_EMAIL")
+	if adminEmail == "" {
+		slog.Warn("ADMIN_EMAIL is not set; the /admin dashboard is disabled")
+	}
+
+	// Number of trusted reverse proxies in front of the app (see
+	// srv.clientIP). 0 means the app is reachable directly.
+	proxyHops := 1
+	if v := os.Getenv("TRUSTED_PROXY_HOPS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return fmt.Errorf("TRUSTED_PROXY_HOPS must be a non-negative integer, got %q", v)
+		}
+		proxyHops = n
+	}
 
 	if baseDir == "" {
 		exe, err := os.Executable()
@@ -55,6 +72,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create server: %w", err)
 	}
+	server.ProxyHops = proxyHops
 	return server.Serve(listenAddr)
 }
 

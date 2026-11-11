@@ -20,7 +20,7 @@ import (
 // isAdmin returns true if the real (non-impersonated) user is the admin.
 func (s *Server) isAdmin(r *http.Request) bool {
 	u := s.getRealUser(r)
-	return u != nil && u.Email == s.AdminEmail
+	return u != nil && s.isAdminEmail(u.Email)
 }
 
 // requireAdmin checks if the current user is admin; returns false and sends 403 if not.

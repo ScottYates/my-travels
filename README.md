@@ -93,6 +93,8 @@ All configuration is via environment variables, loaded from a `.env` file in the
 | `LOG_DIR` | *(empty)* | Directory for daily log files (optional) |
 | `GOOGLE_CLIENT_ID` | *(empty)* | Google OAuth client ID (optional) |
 | `GOOGLE_CLIENT_SECRET` | *(empty)* | Google OAuth client secret (optional) |
+| `ADMIN_EMAIL` | *(empty)* | Google account that may use `/admin` and impersonate users. Unset means no admin |
+| `TRUSTED_PROXY_HOPS` | `1` | Number of trusted reverse proxies in front of the app. Selects the client IP from `X-Forwarded-For` for comment rate limiting. Use `0` when the app is reachable directly |
 
 Example `.env`:
 
@@ -165,6 +167,15 @@ brew install ffmpeg
 ## Deployment with systemd
 
 The included `srv.service` file runs the server as a systemd service. Edit it to match your paths.
+
+The unit runs the server as an unprivileged `my-travels` user with systemd sandboxing, because the server parses untrusted uploads and runs ffmpeg on them. Create the user and hand it the install directory once:
+
+```bash
+sudo useradd --system --home-dir /opt/my-travels --shell /usr/sbin/nologin my-travels
+sudo chown -R my-travels:my-travels /opt/my-travels
+```
+
+The sandbox only allows writes under `/opt/my-travels`. If `LOG_DIR` or `BASE_DIR` point elsewhere, add those paths to `ReadWritePaths=`.
 
 ### Install and start
 

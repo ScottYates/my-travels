@@ -1109,31 +1109,22 @@ func TestClientIP(t *testing.T) {
 		name       string
 		xff        string
 		remoteAddr string
+		hops       int
 		want       string
 	}{
+		{name: "no XFF, plain remote", remoteAddr: "192.0.2.1:12345", hops: 1, want: "192.0.2.1"},
+		{name: "no XFF, IPv6 remote", remoteAddr: "[2001:db8::1]:12345", hops: 1, want: "2001:db8::1"},
+		{name: "single XFF hop", xff: "203.0.113.5", remoteAddr: "10.0.0.1:80", hops: 1, want: "203.0.113.5"},
 		{
-			name:       "no XFF, plain remote",
-			remoteAddr: "192.0.2.1:12345",
-			want:       "192.0.2.1",
+			// The left-most entries are whatever the client sent. Only
+			// the entry appended by our proxy can be trusted.
+			name: "forged entries are ignored", xff: "1.2.3.4, 5.6.7.8, 203.0.113.5",
+			remoteAddr: "10.0.0.99:80", hops: 1, want: "203.0.113.5",
 		},
-		{
-			name:       "single XFF hop",
-			xff:        "203.0.113.5",
-			remoteAddr: "10.0.0.1:80",
-			want:       "203.0.113.5",
-		},
-		{
-			name:       "XFF with multiple hops — use first",
-			xff:        "203.0.113.5, 198.51.100.1, 10.0.0.1",
-			remoteAddr: "10.0.0.99:80",
-			want:       "203.0.113.5",
-		},
-		{
-			name:       "XFF with surrounding whitespace",
-			xff:        "  203.0.113.5  ,  198.51.100.1",
-			remoteAddr: "10.0.0.99:80",
-			want:       "203.0.113.5",
-		},
+		{name: "whitespace", xff: "  1.2.3.4  ,  203.0.113.5  ", remoteAddr: "10.0.0.99:80", hops: 1, want: "203.0.113.5"},
+		{name: "two proxies", xff: "1.2.3.4, 203.0.113.5, 10.0.0.2", remoteAddr: "10.0.0.99:80", hops: 2, want: "203.0.113.5"},
+		{name: "fewer entries than hops", xff: "203.0.113.5", remoteAddr: "10.0.0.99:80", hops: 2, want: "203.0.113.5"},
+		{name: "no proxy: header ignored", xff: "1.2.3.4", remoteAddr: "192.0.2.1:12345", hops: 0, want: "192.0.2.1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1142,7 +1133,7 @@ func TestClientIP(t *testing.T) {
 				r.Header.Set("X-Forwarded-For", tt.xff)
 			}
 			r.RemoteAddr = tt.remoteAddr
-			if got := clientIP(r); got != tt.want {
+			if got := clientIP(r, tt.hops); got != tt.want {
 				t.Errorf("clientIP() = %q, want %q", got, tt.want)
 			}
 		})

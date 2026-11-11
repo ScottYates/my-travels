@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"html/template"
 	"image"
@@ -15,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -28,7 +30,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/rwcarlsen/goexif/exif"
 	"golang.org/x/time/rate"
 	"srv.exe.dev/db"
 	"srv.exe.dev/db/dbgen"
@@ -43,6 +44,18 @@ type Server struct {
 	GoogleClientID     string
 	GoogleClientSecret string
 	AdminEmail         string
+
+	// ProxyHops is the number of trusted reverse proxies in front of the
+	// app. It decides which X-Forwarded-For entry is used as the client
+	// IP. 0 means the app is exposed directly and the header is ignored.
+	ProxyHops int
+
+	// LogDir is where the admin log viewer reads daily log files from.
+	LogDir string
+
+	// thumbSem bounds how many thumbnails are generated at once. Decoding
+	// a large photo takes hundreds of MB, and /thumb/ needs no login.
+	thumbSem chan struct{}
 
 	chunkedMu      sync.Mutex
 	chunkedUploads map[string]*chunkedUpload
@@ -109,36 +122,58 @@ const publicCommentBurst = 5
 // fresh burst.
 const commentLimiterTTL = 1 * time.Hour
 
-// clientIP extracts the originating client IP from X-Forwarded-For (first
-// hop) or falls back to RemoteAddr. The header is trusted as-is here —
-// this app is deployed behind a trusted reverse proxy. If that ever
-// changes, add a hop-count or trusted-proxy check.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if comma := strings.IndexByte(xff, ','); comma >= 0 {
-			return strings.TrimSpace(xff[:comma])
+// clientIP returns the client address to rate-limit on.
+//
+// X-Forwarded-For is a list that each proxy appends to. Entries on the left
+// are supplied by the client and can be forged, so the left-most entry must
+// not be used. With N trusted proxies in front of the app, the N-th entry
+// from the right is the address the outermost trusted proxy saw. proxyHops
+// is that N (set from TRUSTED_PROXY_HOPS, default 1). With 0 the header is
+// ignored and the TCP peer address is used.
+func clientIP(r *http.Request, proxyHops int) string {
+	if proxyHops > 0 {
+		var hops []string
+		for _, h := range r.Header.Values("X-Forwarded-For") {
+			for _, part := range strings.Split(h, ",") {
+				if part = strings.TrimSpace(part); part != "" {
+					hops = append(hops, part)
+				}
+			}
 		}
-		return strings.TrimSpace(xff)
+		if len(hops) > 0 {
+			i := len(hops) - proxyHops
+			if i < 0 {
+				i = 0
+			}
+			return hops[i]
+		}
 	}
-	// r.RemoteAddr is host:port — strip the port.
-	if idx := strings.LastIndexByte(r.RemoteAddr, ':'); idx >= 0 {
-		return r.RemoteAddr[:idx]
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
 	return r.RemoteAddr
 }
+
+// maxCommentLimiters caps the per-IP limiter map so a flood of distinct
+// addresses cannot grow it without bound.
+const maxCommentLimiters = 20000
 
 // checkPublicCommentRateLimit returns true if the request is allowed
 // through, false if the IP is being rate-limited. The token bucket is
 // per-IP and lazily created; old entries are pruned by
 // pruneCommentLimiters (called on every 100th access to amortize cost).
 func (s *Server) checkPublicCommentRateLimit(r *http.Request) bool {
-	ip := clientIP(r)
+	ip := clientIP(r, s.ProxyHops)
 
 	s.commentLimiterMu.Lock()
 	defer s.commentLimiterMu.Unlock()
 
 	entry, ok := s.commentLimiters[ip]
 	if !ok {
+		if len(s.commentLimiters) >= maxCommentLimiters {
+			// Map is full of other addresses. Refuse rather than grow.
+			return false
+		}
 		entry = &commentLimiterEntry{
 			limiter: rate.NewLimiter(publicCommentRateLimit, publicCommentBurst),
 		}
@@ -250,6 +285,9 @@ func New(dbPath, hostname, googleClientID, googleClientSecret, adminEmail, baseD
 		GoogleClientID:     googleClientID,
 		GoogleClientSecret: googleClientSecret,
 		AdminEmail:         adminEmail,
+		ProxyHops:          1,
+		LogDir:             filepath.Join(baseDir, "logs"),
+		thumbSem:           make(chan struct{}, 4),
 		chunkedUploads:     make(map[string]*chunkedUpload),
 		redirects:          loadRedirects(baseDir),
 		commentLimiters:    make(map[string]*commentLimiterEntry),
@@ -340,7 +378,7 @@ func (s *Server) getUser(r *http.Request) *authUser {
 	}
 
 	// If the real user is admin and has an impersonation cookie, act as that user.
-	if sess.Email == s.AdminEmail {
+	if s.isAdminEmail(sess.Email) {
 		if ic, err := r.Cookie(impersonateCookieName); err == nil && ic.Value != "" {
 			// ic.Value is "userID:email"
 			parts := strings.SplitN(ic.Value, ":", 2)
@@ -351,6 +389,12 @@ func (s *Server) getUser(r *http.Request) *authUser {
 	}
 
 	return &authUser{UserID: sess.UserID, Email: sess.Email}
+}
+
+// isAdminEmail reports whether email is the configured admin. With no
+// ADMIN_EMAIL configured there is no admin.
+func (s *Server) isAdminEmail(email string) bool {
+	return s.AdminEmail != "" && email == s.AdminEmail
 }
 
 // getRealUser returns the actual authenticated user, ignoring impersonation.
@@ -543,10 +587,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/admin/stop-impersonate", s.handleAdminStopImpersonate)
 
 	var handler http.Handler = mux
+	handler = limitRequestBody(handler)
 	handler = s.csrfCheck(handler)
 	if len(s.redirects) > 0 {
 		handler = s.redirectMiddleware(handler)
 	}
+	handler = securityHeaders(handler)
 	return handler
 }
 
@@ -572,8 +618,9 @@ func (s *Server) Serve(addr string) error {
 	//
 	// ReadTimeout and WriteTimeout are intentionally zero (no per-byte
 	// deadline) because legitimate handlers do their own bounding:
-	//   - Photo uploads cap body size via http.MaxBytesReader (200 MB).
-	//   - Trip imports cap body size via http.MaxBytesReader (8 GB).
+	//   - Every request body is capped with http.MaxBytesReader, either
+	//     by limitRequestBody or by the upload/import handlers (see
+	//     limits.go for the sizes).
 	//   - SSE (resort-photos) needs to stream indefinitely; it detects
 	//     client disconnect via r.Context().Done().
 	// Setting a global WriteTimeout here would silently break SSE.
@@ -702,7 +749,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			"authenticated": true,
 			"user_id":       u.UserID,
 			"email":         u.Email,
-			"is_admin":      realUser != nil && realUser.Email == s.AdminEmail,
+			"is_admin":      realUser != nil && s.isAdminEmail(realUser.Email),
 			"impersonating": isImpersonating,
 			"real_email": func() string {
 				if realUser != nil {
@@ -741,7 +788,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"authenticated": true,
 		"user_id":       u.UserID,
 		"email":         u.Email,
-		"is_admin":      realUser != nil && realUser.Email == s.AdminEmail,
+		"is_admin":      realUser != nil && s.isAdminEmail(realUser.Email),
 		"impersonating": isImpersonating,
 	}
 	if isImpersonating {
@@ -1246,7 +1293,7 @@ func (s *Server) resolveTripBySlugOrShareID(r *http.Request, slug string) (dbgen
 
 func (s *Server) handleCreateCommentByPresent(w http.ResponseWriter, r *http.Request) {
 	if !s.checkPublicCommentRateLimit(r) {
-		slog.Warn("comment rate limit hit", "path", r.URL.Path, "ip", clientIP(r))
+		slog.Warn("comment rate limit hit", "path", r.URL.Path, "ip", clientIP(r, s.ProxyHops))
 		jsonError(w, "rate limit exceeded — try again later", http.StatusTooManyRequests)
 		return
 	}
@@ -1315,6 +1362,15 @@ func (s *Server) handleCreateStop(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonError(w, "failed to get trip", http.StatusInternalServerError)
 		return
+	}
+
+	// Photos assigned to the new stop must belong to this trip.
+	for _, pid := range body.PhotoIDs {
+		p, err := q.GetPhoto(r.Context(), pid)
+		if err != nil || p.TripID != tripID {
+			jsonError(w, "photo does not belong to this trip", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Determine stop order: use provided order (shifting existing), or append
@@ -1502,38 +1558,6 @@ func (s *Server) handleDeleteStop(w http.ResponseWriter, r *http.Request) {
 // Photos
 // ---------------------------------------------------------------------------
 
-// extractEXIF reads EXIF GPS coordinates and timestamp from image data.
-func extractEXIF(data []byte) (lat, lng *float64, takenAt *time.Time) {
-	x, err := exif.Decode(bytes.NewReader(data))
-	if err != nil {
-		return nil, nil, nil
-	}
-
-	// GPS
-	la, lo, err := x.LatLong()
-	if err == nil {
-		lat = &la
-		lng = &lo
-	}
-
-	// DateTime
-	dt, err := x.DateTime()
-	if err == nil {
-		takenAt = &dt
-	}
-
-	return lat, lng, takenAt
-}
-
-// imageDimensions decodes just the image config to get width/height.
-func imageDimensions(data []byte) (int, int) {
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
-	if err != nil {
-		return 0, 0
-	}
-	return cfg.Width, cfg.Height
-}
-
 // isVideoFile checks if a filename has a video extension.
 func isVideoFile(filename string) bool {
 	ext := strings.ToLower(filepath.Ext(filename))
@@ -1620,12 +1644,20 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 
 	q := dbgen.New(s.DB)
 
-	// Parse multipart form (200 MB max to support video uploads)
-	if err := r.ParseMultipartForm(200 << 20); err != nil {
+	// Cap the request size. ParseMultipartForm's argument is only the
+	// amount kept in memory; the rest goes to temp files on disk.
+	r.Body = http.MaxBytesReader(w, r.Body, maxPhotoUploadBytes+(1<<20))
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		slog.Error("upload: parse multipart form", "error", err)
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			jsonError(w, "file too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		jsonError(w, "failed to parse multipart form", http.StatusBadRequest)
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 
 	file, header, err := r.FormFile("photo")
 	if err != nil {
@@ -1636,14 +1668,6 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	slog.Info("upload: receiving file", "original_name", header.Filename, "size", header.Size, "trip_id", tripID)
-
-	// Read entire file into memory
-	fileData, err := io.ReadAll(file)
-	if err != nil {
-		slog.Error("upload: read file", "error", err)
-		jsonError(w, "failed to read file", http.StatusInternalServerError)
-		return
-	}
 
 	// Generate the stored filename. Only allowlisted image/video
 	// extensions are kept: the extension decides how the file is served.
@@ -1657,36 +1681,17 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	// Detect if this is a video
 	videoUpload := isVideoFile(header.Filename) || isVideoMIME(header.Header.Get("Content-Type"))
 
-	// Save to upload dir
-	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is a UUID plus an allowlisted extension.
-	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is a UUID plus an allowlisted extension.
+	// Stream to the upload dir rather than buffering the file in memory.
+	dstPath := filepath.Join(s.UploadDir, filename) // #nosec G703 -- filename is a UUID plus an allowlisted extension.
+	size, err := saveStream(dstPath, file)
+	if err != nil {
 		slog.Error("upload: write file to disk", "error", err, "path", dstPath)
 		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
 	}
-	slog.Info("upload: saved file", "path", dstPath, "bytes", len(fileData))
+	slog.Info("upload: saved file", "path", dstPath, "bytes", size)
 
-	var exifLat, exifLng *float64
-	var exifTime *time.Time
-	var imgW, imgH int
-
-	if videoUpload {
-		// Use ffprobe for video dimensions
-		imgW, imgH = videoDimensions(dstPath)
-		// Pre-generate video thumbnail
-		if thumbData, err := videoThumbnail(dstPath, 128); err == nil {
-			thumbDir := filepath.Join(s.UploadDir, "thumbs")
-			// #nosec G301,G304,G306 -- thumbDir is server-controlled; filename is server-generated UUID (handleUploadPhoto).
-			os.MkdirAll(thumbDir, 0755) // #nosec G301 -- server-controlled.
-			// #nosec G304,G703 -- filename is server-generated UUID (uuid.New().String()).
-			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644) // #nosec G304,G306,G703 -- filename is server-generated UUID.
-		}
-	} else {
-		// Extract EXIF GPS + timestamp from images
-		exifLat, exifLng, exifTime = extractEXIF(fileData)
-		// Extract image dimensions
-		imgW, imgH = imageDimensions(fileData)
-	}
+	exifLat, exifLng, exifTime, imgW, imgH := s.uploadMeta(dstPath, filename, videoUpload)
 
 	// Form fields override EXIF if provided
 	var lat, lng *float64
@@ -1715,11 +1720,6 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		stopID = &v
 	}
 
-	var takenAt *time.Time
-	if exifTime != nil {
-		takenAt = exifTime
-	}
-
 	id := uuid.New().String()
 	now := time.Now()
 
@@ -1737,16 +1737,15 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		Caption:      caption,
 		Lat:          lat,
 		Lng:          lng,
-		TakenAt:      takenAt,
+		TakenAt:      exifTime,
 		Width:        int64(imgW),
 		Height:       int64(imgH),
-		SizeBytes:    int64(len(fileData)),
+		SizeBytes:    size,
 		CreatedAt:    now,
 		IsVideo:      isVideo,
 	}); err != nil {
 		slog.Error("upload: create photo record", "error", err, "filename", filename)
-		// #nosec G703 -- dstPath uses server-generated UUID filename (see handleUploadPhoto).
-		os.Remove(dstPath)
+		s.removeUploadFiles(filename)
 		jsonError(w, "failed to create photo record", http.StatusInternalServerError)
 		return
 	}
@@ -1758,6 +1757,31 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonCreated(w, photo)
+}
+
+// saveStream writes src to a new file at path and returns the byte count.
+// The partial file is removed on error.
+func saveStream(path string, src io.Reader) (int64, error) {
+	out, err := os.Create(path) // #nosec G304 -- path is the upload dir plus a server-generated name.
+	if err != nil {
+		return 0, err
+	}
+	n, err := io.Copy(out, src)
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(path)
+		return 0, err
+	}
+	return n, nil
+}
+
+// removeUploadFiles deletes a stored file and any thumbnails for it.
+func (s *Server) removeUploadFiles(filename string) {
+	os.Remove(filepath.Join(s.UploadDir, filename))
+	os.Remove(filepath.Join(s.UploadDir, "thumbs", filename))
+	os.Remove(filepath.Join(s.UploadDir, "thumbs", filename+".jpg"))
 }
 
 // -------------------------------------------------------------------
@@ -1775,6 +1799,10 @@ const chunkedUploadTTL = 1 * time.Hour
 const chunkedCleanupInterval = 5 * time.Minute
 
 type chunkedUpload struct {
+	// mu serialises appends to the temp file and guards Received and
+	// ChunkIndex.
+	mu sync.Mutex
+
 	UploadID   string
 	TripID     string
 	UserID     string
@@ -1811,6 +1839,24 @@ func (s *Server) handleChunkedInit(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, ok := uploadExt(body.FileName); !ok {
 		jsonError(w, "unsupported file type", http.StatusUnsupportedMediaType)
+		return
+	}
+	if body.TotalSize < 0 || body.TotalSize > maxChunkedUploadBytes {
+		jsonError(w, "file too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+
+	// Bound how many unfinished uploads one user can hold open.
+	s.chunkedMu.Lock()
+	pending := 0
+	for _, other := range s.chunkedUploads {
+		if other.UserID == user.UserID {
+			pending++
+		}
+	}
+	s.chunkedMu.Unlock()
+	if pending >= maxPendingUploadsPerUser {
+		jsonError(w, "too many uploads in progress", http.StatusTooManyRequests)
 		return
 	}
 
@@ -1869,6 +1915,17 @@ func (s *Server) handleChunkedChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Chunks for one upload are appended one at a time.
+	cu.mu.Lock()
+	defer cu.mu.Unlock()
+
+	// The assembled file may not exceed the size declared at init (or the
+	// global cap when none was declared).
+	limit := int64(maxChunkedUploadBytes)
+	if cu.TotalSize > 0 {
+		limit = cu.TotalSize
+	}
+
 	// Append chunk to temp file
 	// #nosec G304 -- cu.TmpPath is set from the uploadID we generated in init.
 	f, err := os.OpenFile(cu.TmpPath, os.O_APPEND|os.O_WRONLY, 0644)
@@ -1878,24 +1935,40 @@ func (s *Server) handleChunkedChunk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxChunkBytes)
 	n, err := io.Copy(f, r.Body)
 	f.Close()
-	if err != nil {
+	if err != nil || cu.Received+n > limit {
+		// A partial or oversized chunk leaves the temp file unusable.
+		// Drop the upload; the client starts again with a new init.
+		s.abortChunkedUpload(cu)
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) || err == nil {
+			slog.Warn("chunked chunk: size limit exceeded", "upload_id", uploadID)
+			jsonError(w, "upload exceeds size limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Error("chunked chunk: write", "error", err, "upload_id", uploadID)
 		jsonError(w, "failed to write chunk", http.StatusInternalServerError)
 		return
 	}
 
-	s.chunkedMu.Lock()
 	cu.Received += n
 	cu.ChunkIndex++
 	chunkIdx := cu.ChunkIndex
 	received := cu.Received
-	s.chunkedMu.Unlock()
 
 	slog.Info("chunked upload: chunk received", "upload_id", uploadID, "chunk", chunkIdx, "chunk_bytes", n, "total_received", received)
 
 	jsonOK(w, map[string]any{"chunk": chunkIdx, "received": received})
+}
+
+// abortChunkedUpload forgets an in-progress upload and deletes its temp file.
+func (s *Server) abortChunkedUpload(cu *chunkedUpload) {
+	s.chunkedMu.Lock()
+	delete(s.chunkedUploads, cu.UploadID)
+	s.chunkedMu.Unlock()
+	os.Remove(cu.TmpPath)
 }
 
 // POST /api/uploads/{uploadID}/complete
@@ -1905,9 +1978,6 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 
 	s.chunkedMu.Lock()
 	cu, exists := s.chunkedUploads[uploadID]
-	if exists {
-		delete(s.chunkedUploads, uploadID)
-	}
 	s.chunkedMu.Unlock()
 
 	if !exists {
@@ -1915,28 +1985,42 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the user owns this upload
+	// Verify the user owns this upload before touching it.
 	user := s.getUser(r)
 	if user == nil || user.UserID != cu.UserID {
 		jsonError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	// Read the assembled file
-	fileData, err := os.ReadFile(cu.TmpPath)
-	os.Remove(cu.TmpPath)
-	if err != nil {
-		slog.Error("chunked complete: read assembled file", "error", err, "upload_id", uploadID)
-		jsonError(w, "failed to read assembled file", http.StatusInternalServerError)
+	// Take the upload out of the map so it cannot be completed twice.
+	s.chunkedMu.Lock()
+	_, exists = s.chunkedUploads[uploadID]
+	delete(s.chunkedUploads, uploadID)
+	s.chunkedMu.Unlock()
+	if !exists {
+		jsonError(w, "upload not found", http.StatusNotFound)
 		return
 	}
 
-	slog.Info("chunked upload: completing", "upload_id", uploadID, "file_name", cu.FileName, "bytes", len(fileData))
+	// Wait for any chunk still being written.
+	cu.mu.Lock()
+	received := cu.Received
+	cu.mu.Unlock()
+
+	if cu.TotalSize > 0 && received != cu.TotalSize {
+		os.Remove(cu.TmpPath)
+		slog.Warn("chunked complete: size mismatch", "upload_id", uploadID, "received", received, "total_size", cu.TotalSize)
+		jsonError(w, "upload incomplete", http.StatusBadRequest)
+		return
+	}
+
+	slog.Info("chunked upload: completing", "upload_id", uploadID, "file_name", cu.FileName, "bytes", received)
 
 	// Generate final filename (extension was checked at init; check again
 	// so this handler is safe on its own).
 	ext, ok := uploadExt(cu.FileName)
 	if !ok {
+		os.Remove(cu.TmpPath)
 		jsonError(w, "unsupported file type", http.StatusUnsupportedMediaType)
 		return
 	}
@@ -1944,38 +2028,18 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 
 	videoUpload := isVideoFile(cu.FileName) || isVideoMIME(cu.MimeType)
 
-	// Save to upload dir
-	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is a UUID plus an allowlisted extension.
-	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is a UUID plus an allowlisted extension.
-		slog.Error("chunked complete: write final file", "error", err, "path", dstPath)
+	// Move the assembled file into place. Both paths are in the upload
+	// dir, so this is a rename and the file is never read into memory.
+	dstPath := filepath.Join(s.UploadDir, filename) // #nosec G703 -- filename is a UUID plus an allowlisted extension.
+	if err := os.Rename(cu.TmpPath, dstPath); err != nil {
+		os.Remove(cu.TmpPath)
+		slog.Error("chunked complete: move final file", "error", err, "path", dstPath)
 		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
 	}
+	os.Chmod(dstPath, 0o644) // #nosec G302 -- uploads are public by design.
 
-	var exifLat, exifLng *float64
-	var exifTime *time.Time
-	var imgW, imgH int
-
-	if videoUpload {
-		imgW, imgH = videoDimensions(dstPath)
-		if thumbData, err := videoThumbnail(dstPath, 128); err == nil {
-			thumbDir := filepath.Join(s.UploadDir, "thumbs")
-			os.MkdirAll(thumbDir, 0755)                                             // #nosec G301 -- server-controlled.
-			os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0644) // #nosec G304,G306 -- filename is server-generated UUID.
-		}
-	} else {
-		exifLat, exifLng, exifTime = extractEXIF(fileData)
-		imgW, imgH = imageDimensions(fileData)
-	}
-
-	var lat, lng *float64
-	lat = exifLat
-	lng = exifLng
-
-	var takenAt *time.Time
-	if exifTime != nil {
-		takenAt = exifTime
-	}
+	lat, lng, takenAt, imgW, imgH := s.uploadMeta(dstPath, filename, videoUpload)
 
 	var isVideo int64
 	if videoUpload {
@@ -1996,12 +2060,12 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 		TakenAt:      takenAt,
 		Width:        int64(imgW),
 		Height:       int64(imgH),
-		SizeBytes:    int64(len(fileData)),
+		SizeBytes:    received,
 		CreatedAt:    now,
 		IsVideo:      isVideo,
 	}); err != nil {
 		slog.Error("chunked complete: create photo record", "error", err, "filename", filename)
-		os.Remove(dstPath)
+		s.removeUploadFiles(filename)
 		jsonError(w, "failed to create photo record", http.StatusInternalServerError)
 		return
 	}
@@ -2205,13 +2269,12 @@ func (s *Server) handleRescanPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileData, err := os.ReadFile(filePath)
-	if err != nil {
+	if _, err := os.Stat(filePath); err != nil {
 		jsonError(w, "photo file not found on disk", http.StatusNotFound)
 		return
 	}
 
-	exifLat, exifLng, exifTime := extractEXIF(fileData)
+	exifLat, exifLng, exifTime, _, _ := imageFileMeta(filePath)
 
 	// Update photo with any newly found data
 	newLat := photo.Lat
@@ -2329,6 +2392,16 @@ func (s *Server) handleReorderPhotos(w http.ResponseWriter, r *http.Request) {
 
 	q := dbgen.New(s.DB)
 
+	// Every photo in the list must belong to the same trip as the first
+	// one, which the caller has been checked to own.
+	for _, pid := range body.PhotoIDs[1:] {
+		p, err := q.GetPhoto(r.Context(), pid)
+		if err != nil || p.TripID != firstPhoto.TripID {
+			jsonError(w, "photo does not belong to this trip", http.StatusBadRequest)
+			return
+		}
+	}
+
 	// Verify stop belongs to same trip if provided
 	if body.StopID != nil && *body.StopID != "" {
 		stop, err := q.GetStop(r.Context(), *body.StopID)
@@ -2393,7 +2466,16 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	srcPath := filepath.Join(s.UploadDir, filename) // #nosec G703 -- filename was rejected if it contained "/" or "..". // #nosec G703 -- filename sanitized at top of handleThumbnail.
+	srcPath := filepath.Join(s.UploadDir, filename) // #nosec G703 -- filename sanitized at top of handleThumbnail.
+
+	// Generating a thumbnail is expensive and this endpoint needs no
+	// login, so only a few run at once. Others wait their turn.
+	select {
+	case s.thumbSem <- struct{}{}:
+		defer func() { <-s.thumbSem }()
+	case <-r.Context().Done():
+		return
+	}
 
 	if isVid {
 		// Generate video thumbnail via ffmpeg
@@ -2418,6 +2500,22 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer srcFile.Close()
+
+	// Check the declared dimensions before decoding: a small file can
+	// declare an image large enough to exhaust memory.
+	cfg, _, err := image.DecodeConfig(srcFile)
+	if err != nil {
+		http.Error(w, "failed to decode image", http.StatusInternalServerError)
+		return
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxThumbPixels {
+		http.Error(w, "image too large to thumbnail", http.StatusUnprocessableEntity)
+		return
+	}
+	if _, err := srcFile.Seek(0, io.SeekStart); err != nil {
+		http.Error(w, "failed to decode image", http.StatusInternalServerError)
+		return
+	}
 
 	srcImg, _, err := image.Decode(srcFile)
 	if err != nil {
@@ -2902,7 +3000,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateCommentByShare(w http.ResponseWriter, r *http.Request) {
 	if !s.checkPublicCommentRateLimit(r) {
-		slog.Warn("comment rate limit hit", "path", r.URL.Path, "ip", clientIP(r))
+		slog.Warn("comment rate limit hit", "path", r.URL.Path, "ip", clientIP(r, s.ProxyHops))
 		jsonError(w, "rate limit exceeded — try again later", http.StatusTooManyRequests)
 		return
 	}
@@ -3208,7 +3306,8 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 
 	if strings.HasPrefix(contentType, "multipart/") {
 		// GPX file upload
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRouteBodyBytes)
+		if err := r.ParseMultipartForm(8 << 20); err != nil {
 			jsonError(w, "failed to parse multipart form", http.StatusBadRequest)
 			return
 		}
@@ -3219,6 +3318,7 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		defer file.Close()
+		defer r.MultipartForm.RemoveAll()
 
 		gpxData, err := io.ReadAll(file)
 		if err != nil {
@@ -3245,6 +3345,7 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 			Geojson string `json:"geojson"`
 			Color   string `json:"color"`
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRouteBodyBytes)
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			jsonError(w, "invalid JSON body", http.StatusBadRequest)
 			return
@@ -3290,12 +3391,26 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteRoute(w http.ResponseWriter, r *http.Request) {
-	u := s.requireUser(w, r)
-	if u == nil {
+	if u := s.requireUser(w, r); u == nil {
 		return
 	}
 	id := r.PathValue("id")
 	q := dbgen.New(s.DB)
+
+	// The route's trip must belong to the caller.
+	var tripID string
+	err := s.DB.QueryRowContext(r.Context(), "SELECT trip_id FROM routes WHERE id = ?", id).Scan(&tripID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "route not found", http.StatusNotFound)
+		} else {
+			jsonError(w, "failed to get route", http.StatusInternalServerError)
+		}
+		return
+	}
+	if _, _, ok := s.requireTripOwner(w, r, tripID); !ok {
+		return
+	}
 
 	if err := q.DeleteRoute(r.Context(), id); err != nil {
 		jsonError(w, "failed to delete route", http.StatusInternalServerError)

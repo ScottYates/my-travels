@@ -284,3 +284,260 @@ func TestImportNeutralisesDisallowedExtension(t *testing.T) {
 		t.Errorf("imported route colour not sanitised: %+v", detail.Routes)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Ownership checks
+// ---------------------------------------------------------------------------
+
+// twoUsers returns a server with two logged-in users and one trip each.
+func twoUsers(t *testing.T) (s *Server, ts *httptest.Server, tokA, tokB string, tripA, tripB dbgen.Trip) {
+	t.Helper()
+	s, ts, _ = newTestServer(t)
+	tokA = insertSession(t, s, "userA", "a@test.com")
+	tokB = insertSession(t, s, "userB", "b@test.com")
+	tripA = createTestTrip(t, ts, tokA)
+	tripB = createTestTrip(t, ts, tokB)
+	return
+}
+
+func TestDeleteRouteRequiresOwner(t *testing.T) {
+	_, ts, tokA, tokB, tripA, _ := twoUsers(t)
+
+	var route dbgen.Route
+	doRequest(t, ts, "POST", "/api/trips/"+tripA.ID+"/routes", tokA, "",
+		map[string]string{"name": "r", "geojson": "{}"}, &route)
+
+	if resp := doRequest(t, ts, "DELETE", "/api/routes/"+route.ID, tokB, "", nil, nil); resp.StatusCode != http.StatusForbidden {
+		t.Errorf("other user delete: status %d, want 403", resp.StatusCode)
+	}
+	if resp := doRequest(t, ts, "DELETE", "/api/routes/nope", tokA, "", nil, nil); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("missing route: status %d, want 404", resp.StatusCode)
+	}
+	if resp := doRequest(t, ts, "DELETE", "/api/routes/"+route.ID, tokA, "", nil, nil); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("owner delete: status %d, want 204", resp.StatusCode)
+	}
+}
+
+func TestReorderRejectsForeignPhotos(t *testing.T) {
+	s, ts, tokA, tokB, tripA, tripB := twoUsers(t)
+	victim := uploadTestPhoto(t, ts, tokA, tripA.ID, "a.jpg")
+	own := uploadTestPhoto(t, ts, tokB, tripB.ID, "b.jpg")
+
+	resp := doRequest(t, ts, "POST", "/api/photos/reorder", tokB, "",
+		map[string]any{"photo_ids": []string{own.ID, victim.ID}}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("reorder with foreign photo: status %d, want 400", resp.StatusCode)
+	}
+
+	// A new stop must not be able to take another trip's photo either.
+	resp = doRequest(t, ts, "POST", "/api/trips/"+tripB.ID+"/stops", tokB, "",
+		map[string]any{"title": "s", "lat": 1.0, "lng": 1.0, "photo_ids": []string{victim.ID}}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("create stop with foreign photo: status %d, want 400", resp.StatusCode)
+	}
+
+	got, err := dbgen.New(s.DB).GetPhoto(t.Context(), victim.ID)
+	if err != nil {
+		t.Fatalf("GetPhoto: %v", err)
+	}
+	if got.StopID != nil || got.PhotoOrder != 0 {
+		t.Errorf("victim photo was modified: stop=%v order=%d", got.StopID, got.PhotoOrder)
+	}
+
+	// Reordering within one's own trip still works.
+	own2 := uploadTestPhoto(t, ts, tokB, tripB.ID, "c.jpg")
+	resp = doRequest(t, ts, "POST", "/api/photos/reorder", tokB, "",
+		map[string]any{"photo_ids": []string{own2.ID, own.ID}}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("own reorder: status %d, want 200", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Size limits
+// ---------------------------------------------------------------------------
+
+func postRaw(t *testing.T, ts *httptest.Server, path, token string, body []byte) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest("POST", ts.URL+path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if token != "" {
+		req.AddCookie(cookieValue("session", token))
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	return resp
+}
+
+func chunkedInit(t *testing.T, ts *httptest.Server, token, tripID, name string, total int64) (string, int) {
+	t.Helper()
+	var out struct {
+		UploadID string `json:"upload_id"`
+	}
+	resp := doRequest(t, ts, "POST", "/api/trips/"+tripID+"/uploads/init", token, "",
+		map[string]any{"file_name": name, "mime_type": "image/jpeg", "total_size": total}, &out)
+	return out.UploadID, resp.StatusCode
+}
+
+func TestChunkedUploadRoundTrip(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	token := insertSession(t, s, "u1", "u1@test.com")
+	trip := createTestTrip(t, ts, token)
+	data := testJPEG(t)
+
+	id, status := chunkedInit(t, ts, token, trip.ID, "pic.jpg", int64(len(data)))
+	if status != http.StatusCreated {
+		t.Fatalf("init: status %d", status)
+	}
+	half := len(data) / 2
+	for _, part := range [][]byte{data[:half], data[half:]} {
+		resp := postRaw(t, ts, "/api/uploads/"+id+"/chunk", token, part)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("chunk: status %d", resp.StatusCode)
+		}
+	}
+	var photo dbgen.Photo
+	resp := doRequest(t, ts, "POST", "/api/uploads/"+id+"/complete", token, "", nil, &photo)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("complete: status %d", resp.StatusCode)
+	}
+	if photo.SizeBytes != int64(len(data)) || photo.Width != 8 || photo.Height != 8 {
+		t.Errorf("photo = size %d %dx%d", photo.SizeBytes, photo.Width, photo.Height)
+	}
+	stored, err := os.ReadFile(filepath.Join(s.UploadDir, photo.Filename))
+	if err != nil || !bytes.Equal(stored, data) {
+		t.Errorf("stored file differs from upload (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.UploadDir, "_chunks_"+id)); !os.IsNotExist(err) {
+		t.Errorf("temp chunk file left behind")
+	}
+}
+
+func TestChunkedUploadEnforcesDeclaredSize(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	token := insertSession(t, s, "u1", "u1@test.com")
+	trip := createTestTrip(t, ts, token)
+
+	if _, status := chunkedInit(t, ts, token, trip.ID, "big.mp4", maxChunkedUploadBytes+1); status != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized init: status %d, want 413", status)
+	}
+
+	// More bytes than declared: the upload is dropped.
+	id, _ := chunkedInit(t, ts, token, trip.ID, "pic.jpg", 10)
+	resp := postRaw(t, ts, "/api/uploads/"+id+"/chunk", token, make([]byte, 11))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("overflow chunk: status %d, want 413", resp.StatusCode)
+	}
+	if _, err := os.Stat(filepath.Join(s.UploadDir, "_chunks_"+id)); !os.IsNotExist(err) {
+		t.Errorf("temp file kept after overflow")
+	}
+
+	// Fewer bytes than declared: complete is refused.
+	id, _ = chunkedInit(t, ts, token, trip.ID, "pic.jpg", 10)
+	resp = postRaw(t, ts, "/api/uploads/"+id+"/chunk", token, make([]byte, 5))
+	resp.Body.Close()
+	resp = doRequest(t, ts, "POST", "/api/uploads/"+id+"/complete", token, "", nil, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("short complete: status %d, want 400", resp.StatusCode)
+	}
+
+	// One chunk over the per-chunk cap.
+	id, _ = chunkedInit(t, ts, token, trip.ID, "v.mp4", maxChunkBytes*2)
+	resp = postRaw(t, ts, "/api/uploads/"+id+"/chunk", token, make([]byte, maxChunkBytes+1))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("oversized chunk: status %d, want 413", resp.StatusCode)
+	}
+}
+
+func TestJSONBodyLimit(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	token := insertSession(t, s, "u1", "u1@test.com")
+	trip := createTestTrip(t, ts, token)
+	photo := uploadTestPhoto(t, ts, token, trip.ID, "a.jpg")
+
+	big := strings.Repeat("a", maxCommentBodyBytes+1)
+	resp := doRequest(t, ts, "POST", "/api/share/"+trip.ShareID+"/photos/"+photo.ID+"/comments", "", "",
+		map[string]string{"author": "x", "body": big}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("oversized comment: status %d, want 400", resp.StatusCode)
+	}
+	// A normal anonymous comment on a shared trip still works.
+	resp = doRequest(t, ts, "POST", "/api/share/"+trip.ShareID+"/photos/"+photo.ID+"/comments", "", "",
+		map[string]string{"author": "x", "body": "nice"}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("normal comment: status %d, want 201", resp.StatusCode)
+	}
+
+	resp = doRequest(t, ts, "POST", "/api/trips", token, "",
+		map[string]string{"title": strings.Repeat("a", maxJSONBodyBytes+1)}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("oversized trip body: status %d, want 400", resp.StatusCode)
+	}
+}
+
+// A zip entry that declares more data than the import limit is refused
+// before anything is created.
+func TestImportRejectsOversizedArchive(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	token := insertSession(t, s, "u1", "u1@test.com")
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	mf, _ := zw.Create("manifest.json")
+	json.NewEncoder(mf).Encode(backupManifest{Version: 1, Trip: dbgen.Trip{Title: "bomb"}})
+	// Raw entry: tiny payload, huge declared size.
+	fw, _ := zw.CreateRaw(&zip.FileHeader{Name: "files/x.jpg", Method: zip.Deflate,
+		CompressedSize64: 1, UncompressedSize64: maxImportBytes + 1})
+	fw.Write([]byte{0})
+	zw.Close()
+
+	resp := postMultipart(t, ts, "/api/trips/import", token, "file", "trip.zip", buf.Bytes())
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("import: status %d, want 413", resp.StatusCode)
+	}
+	var trips []dbgen.Trip
+	doRequest(t, ts, "GET", "/api/trips", token, "", nil, &trips)
+	if len(trips) != 0 {
+		t.Errorf("trip created from rejected archive")
+	}
+}
+
+func TestSecurityHeaders(t *testing.T) {
+	_, ts, _ := newTestServer(t)
+
+	resp := get(t, ts.URL+"/")
+	resp.Body.Close()
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("missing nosniff")
+	}
+	if resp.Header.Get("X-Frame-Options") != "SAMEORIGIN" {
+		t.Errorf("app page not frame-protected")
+	}
+	if !strings.Contains(resp.Header.Get("Content-Security-Policy"), "object-src 'none'") {
+		t.Errorf("CSP = %q", resp.Header.Get("Content-Security-Policy"))
+	}
+
+	// Shared pages stay embeddable.
+	resp = get(t, ts.URL+"/share/abc")
+	resp.Body.Close()
+	if resp.Header.Get("X-Frame-Options") != "" || strings.Contains(resp.Header.Get("Content-Security-Policy"), "frame-ancestors") {
+		t.Errorf("share page should not carry frame restrictions")
+	}
+}
+
+func TestNoAdminWithoutAdminEmail(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	s.AdminEmail = ""
+	token := insertSession(t, s, "u1", "u1@test.com")
+	resp := doRequest(t, ts, "POST", "/api/admin/impersonate", token, "",
+		map[string]string{"user_id": "x", "email": "x@test.com"}, nil)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status %d, want 403", resp.StatusCode)
+	}
+}

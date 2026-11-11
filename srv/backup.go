@@ -209,8 +209,8 @@ func (s *Server) handleImportTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Limit upload size to 8 GB.
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<30)
+	// Limit upload size.
+	r.Body = http.MaxBytesReader(w, r.Body, maxImportBytes)
 
 	// Parse multipart form – keep up to 64 MB in memory, rest on disk.
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
@@ -251,6 +251,17 @@ func (s *Server) handleImportTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refuse archives that would unpack to more than the upload limit.
+	// The declared sizes are enforced per entry in extractZipFile.
+	var unpacked uint64
+	for _, f := range zr.File {
+		unpacked += f.UncompressedSize64
+		if unpacked > maxImportBytes {
+			jsonError(w, "archive contents too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
+
 	// Read manifest.json
 	var manifest backupManifest
 	manifestFile, err := zr.Open("manifest.json")
@@ -258,7 +269,7 @@ func (s *Server) handleImportTrip(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "zip missing manifest.json", http.StatusBadRequest)
 		return
 	}
-	if err := json.NewDecoder(manifestFile).Decode(&manifest); err != nil {
+	if err := json.NewDecoder(io.LimitReader(manifestFile, maxManifestBytes)).Decode(&manifest); err != nil {
 		manifestFile.Close()
 		jsonError(w, "invalid manifest.json", http.StatusBadRequest)
 		return
@@ -530,9 +541,16 @@ func extractZipFile(zf *zip.File, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", destPath, err)
 	}
-	defer out.Close()
 
-	if _, err := io.Copy(out, rc); err != nil {
+	// Never write more than the entry's declared size. The total of the
+	// declared sizes was checked before extraction started, so a
+	// compressed entry cannot expand past it.
+	_, err = io.Copy(out, io.LimitReader(rc, int64(zf.UncompressedSize64))) // #nosec G110 -- bounded by LimitReader.
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(destPath)
 		return fmt.Errorf("copy %s: %w", zf.Name, err)
 	}
 	return nil

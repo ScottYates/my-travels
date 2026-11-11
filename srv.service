@@ -3,17 +3,33 @@ Description=my-travels
 
 [Service]
 Type=simple
-User=root
-Group=wheel
+# Run as an unprivileged account. The app parses untrusted uploads and runs
+# ffmpeg on them, so it must not run as root. One-time setup:
+#   sudo useradd --system --home-dir /opt/my-travels --shell /usr/sbin/nologin my-travels
+#   sudo chown -R my-travels:my-travels /opt/my-travels
+User=my-travels
+Group=my-travels
 WorkingDirectory=/opt/my-travels
 ExecStart=/opt/my-travels/start.sh
 Restart=always
 RestartSec=5
-Environment=HOME=/root
-Environment=USER=root
 EnvironmentFile=-/opt/my-travels/.env
 StandardOutput=journal
 StandardError=journal
+
+# Sandboxing. The service can write only under its working directory.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ReadWritePaths=/opt/my-travels
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target

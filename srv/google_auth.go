@@ -258,6 +258,12 @@ func verifyGoogleIDToken(ctx context.Context, tokenString, clientID string) (*go
 		return nil, errors.New("missing sub or email in token")
 	}
 
+	// The email decides who is admin, so it must be one Google has
+	// verified belongs to this account.
+	if !payload.EmailVerified {
+		return nil, errors.New("email not verified by Google")
+	}
+
 	return &googleClaims{
 		Sub:   payload.Sub,
 		Email: payload.Email,
