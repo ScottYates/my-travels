@@ -44,7 +44,7 @@ my-travels/
 ├── db.sqlite3               # SQLite database file (gitignored, created on first run)
 ├── .env.example             # Example configuration file
 ├── .env                     # Your local configuration (gitignored)
-├── srv.service              # systemd unit file
+├── my-travels.service       # systemd unit file
 ├── Makefile                 # Build targets
 └── go.mod / go.sum          # Go module files
 ```
@@ -130,7 +130,7 @@ BASE_DIR=/path/to/my-travels my-travels
 
 ### 6. (Optional) Configure Google OAuth
 
-Google OAuth lets users log in and own their trips. Without it, the app still runs but has no authentication.
+Google OAuth lets users log in and own their trips. Without it the server starts and existing share and presentation links work, but nobody can log in, so trips cannot be created or edited. Any Google account can log in; there is no allowlist.
 
 #### a. Create a Google Cloud OAuth client
 
@@ -166,7 +166,7 @@ brew install ffmpeg
 
 ## Deployment with systemd
 
-The included `srv.service` file runs the server as a systemd service. Edit it to match your paths.
+The included `my-travels.service` file runs the server as a systemd service. Edit it to match your paths.
 
 The unit runs the server as an unprivileged `my-travels` user with systemd sandboxing, because the server parses untrusted uploads and runs ffmpeg on them. Create the user and hand it the install directory once:
 
@@ -180,26 +180,26 @@ The sandbox only allows writes under `/opt/my-travels`. If `LOG_DIR` or `BASE_DI
 ### Install and start
 
 ```bash
-# Edit srv.service: set WorkingDirectory and ExecStart path
+# Edit my-travels.service: set WorkingDirectory and ExecStart path
 # Create .env in the WorkingDirectory with your configuration
-sudo cp srv.service /etc/systemd/system/srv.service
+sudo cp my-travels.service /etc/systemd/system/my-travels.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now srv
+sudo systemctl enable --now my-travels
 ```
 
-The systemd unit loads environment variables from `~/.env` via `EnvironmentFile`. The application also reads `.env` from its working directory. Either or both can be used.
+The systemd unit loads environment variables from `/opt/my-travels/.env` via `EnvironmentFile`. The application also reads `.env` from its working directory. Either or both can be used.
 
 ### Restart after code changes
 
 ```bash
 make build OUT=/path/to/binary
-sudo systemctl restart srv
+sudo systemctl restart my-travels
 ```
 
 ### View logs
 
 ```bash
-journalctl -u srv -f
+journalctl -u my-travels -f
 ```
 
 ## Logging

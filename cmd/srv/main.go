@@ -73,6 +73,10 @@ func run() error {
 		return fmt.Errorf("create server: %w", err)
 	}
 	server.ProxyHops = proxyHops
+	if logDir != "" {
+		// Point the admin log viewer at the directory actually in use.
+		server.LogDir = logDir
+	}
 	return server.Serve(listenAddr)
 }
 

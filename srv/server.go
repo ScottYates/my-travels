@@ -742,7 +742,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.ParseFiles(path)
 	if err != nil {
 		// Fallback: try serving a plain file if template parsing fails
-		// #nosec G304 -- http.ServeFile has its own path-traversal protection; path comes from operator-supplied redirects.json.
+		// #nosec G304 -- path is the fixed index.html under the templates dir.
 		http.ServeFile(w, r, path)
 		return
 	}

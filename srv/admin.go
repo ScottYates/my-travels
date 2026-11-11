@@ -67,7 +67,7 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logDir := filepath.Join(filepath.Dir(s.TemplatesDir), "..", "logs")
+	logDir := s.LogDir
 
 	// List available log files
 	var logFiles []string
@@ -455,7 +455,7 @@ func (s *Server) handleAdminUploadIssues(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	logDir := filepath.Join(filepath.Dir(s.TemplatesDir), "..", "logs")
+	logDir := s.LogDir
 
 	// Scan log files for upload-related errors and warnings
 	var issues []logEntry
@@ -552,7 +552,6 @@ func (s *Server) handleAdminUploadIssues(w http.ResponseWriter, r *http.Request)
 		rows.Close()
 	}
 
-	_ = json.NewEncoder(w)
 	jsonOK(w, map[string]any{
 		"log_issues":     issues,
 		"missing_photos": missingPhotos,
