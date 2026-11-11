@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -795,5 +796,99 @@ func TestAdminDeleteOrphanFilesRefusesEmptyDB(t *testing.T) {
 	}
 	if _, err := os.Stat(p); err != nil {
 		t.Errorf("file deleted despite empty database")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Admin: log parsing and the upload issues filter
+// ---------------------------------------------------------------------------
+
+func TestParseSlogLine(t *testing.T) {
+	line := `time=2026-11-11T11:05:01.123-06:00 level=ERROR msg="upload: write file to disk" error="open /x/y: permission denied" path=/x/y.jpg note="say \"hi\""`
+	e := parseSlogLine(line)
+	if e.Time != "2026-11-11T11:05:01.123-06:00" || e.Level != "ERROR" || e.Msg != "upload: write file to disk" {
+		t.Errorf("parsed = %+v", e)
+	}
+	want := `error="open /x/y: permission denied" path=/x/y.jpg note="say \"hi\""`
+	if e.Detail != want {
+		t.Errorf("detail = %q, want %q", e.Detail, want)
+	}
+
+	// A line in some other format is kept whole as the message.
+	e = parseSlogLine("panic: something broke")
+	if e.Msg != "panic: something broke" || e.Level != "" || e.Detail != "" {
+		t.Errorf("plain line parsed = %+v", e)
+	}
+}
+
+func TestIsUploadIssue(t *testing.T) {
+	req := func(level, method, path string, status int) string {
+		return `time=2026-11-11T11:00:00Z level=` + level + ` msg="http request" method=` + method + ` path=` + path +
+			` status=` + strconv.Itoa(status) + ` bytes=10 duration=1ms remote=1.2.3.4:5`
+	}
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"upload error message", `time=t level=ERROR msg="upload: write file to disk" error=x`, true},
+		{"chunked warning", `time=t level=WARN msg="chunked chunk: size limit exceeded" upload_id=u`, true},
+		{"import error", `time=t level=ERROR msg="import: open zip" err=x`, true},
+		{"failed photo POST", req("WARN", "POST", "/api/trips/abc/photos", 415), true},
+		{"failed chunk POST", req("ERROR", "POST", "/api/uploads/abc/chunk", 500), true},
+		{"failed init POST", req("WARN", "POST", "/api/trips/abc/uploads/init", 401), true},
+		{"failed import POST", req("WARN", "POST", "/api/trips/import", 400), true},
+
+		// Not upload problems, although the line contains "upload".
+		{"missing file GET", req("WARN", "GET", "/uploads/abc.jpg", 404), false},
+		{"upload dir probe", req("WARN", "GET", "/uploads/", 404), false},
+		{"admin uploads page", req("WARN", "GET", "/api/admin/uploads", 403), false},
+		{"admin issues page", req("ERROR", "GET", "/api/admin/upload-issues", 500), false},
+		{"thumbnail failure", req("ERROR", "GET", "/thumb/abc.jpg", 500), false},
+		{"unrelated warning", `time=t level=WARN msg="comment rate limit hit" path=/api/share/x/photos/y/comments ip=1.2.3.4`, false},
+		{"comment POST", req("WARN", "POST", "/api/share/x/photos/y/comments", 429), false},
+		{"csrf warning on upload path", `time=t level=WARN msg="csrf: origin mismatch" path=/api/trips/a/photos`, false},
+
+		// Successful and informational lines.
+		{"upload info", `time=t level=INFO msg="upload: saved file" path=/x`, false},
+		{"ok photo POST", req("INFO", "POST", "/api/trips/abc/photos", 201), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e, attrs := parseSlogEntry(tt.line)
+			if got := isUploadIssue(e, attrs); got != tt.want {
+				t.Errorf("isUploadIssue = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// The upload issues endpoint returns only upload lines, newest first.
+func TestAdminUploadIssuesFiltersLog(t *testing.T) {
+	s, ts, tempDir := newTestServer(t)
+	admin := insertSession(t, s, "adm", "admin@test.com")
+	s.LogDir = filepath.Join(tempDir, "logs")
+	os.MkdirAll(s.LogDir, 0o755)
+	log := strings.Join([]string{
+		`time=2026-11-10T10:00:00Z level=WARN msg="http request" method=GET path=/uploads/gone.jpg status=404 bytes=19 duration=0s remote=1.2.3.4:5`,
+		`time=2026-11-10T10:00:01Z level=ERROR msg="upload: write file to disk" error="disk full" path=/x/a.jpg`,
+		`time=2026-11-10T10:00:02Z level=INFO msg="upload: saved file" path=/x/b.jpg bytes=5`,
+		`time=2026-11-10T10:00:03Z level=WARN msg="http request" method=POST path=/api/trips/t1/photos status=415 bytes=30 duration=1ms remote=1.2.3.4:5`,
+	}, "\n") + "\n"
+	os.WriteFile(filepath.Join(s.LogDir, "2026-11-10.log"), []byte(log), 0o644)
+
+	var out struct {
+		LogIssues []logEntry `json:"log_issues"`
+	}
+	doRequest(t, ts, "GET", "/api/admin/upload-issues", admin, "", nil, &out)
+	if len(out.LogIssues) != 2 {
+		t.Fatalf("issues = %d, want 2: %+v", len(out.LogIssues), out.LogIssues)
+	}
+	first, second := out.LogIssues[0], out.LogIssues[1]
+	if first.Msg != "http request" || first.Detail != "method=POST path=/api/trips/t1/photos status=415 bytes=30 duration=1ms remote=1.2.3.4:5" {
+		t.Errorf("first = %+v", first)
+	}
+	if second.Msg != "upload: write file to disk" || second.File != "2026-11-10.log" || second.Detail != `error="disk full" path=/x/a.jpg` {
+		t.Errorf("second = %+v", second)
 	}
 }

@@ -179,6 +179,28 @@ tbody tr:hover {
   border-bottom: 1px solid var(--border);
   line-height: 1.6;
   word-break: break-all;
+  text-align: left;
+}
+/* A parsed log line: fixed-width time and level columns, then the text. */
+.log-entry.log-line {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+.log-entry.log-line .time,
+.log-entry.log-line [class^="level-"] {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.log-entry.log-line [class^="level-"] {
+  width: 5ch;
+}
+.log-entry.log-line .body {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.log-entry .detail {
+  color: var(--text2);
 }
 .log-entry:hover {
   background: var(--surface);
@@ -417,13 +439,20 @@ function initPanel() {
 const loaded = {};
 function loadPanel(panel) {
   switch(panel) {
-    case 'overview': loadOverview(); break;
+    case 'overview': loadOverview().finally(() => doneLoading('system-info')); break;
     case 'logs': if (!loaded.logs) loadLogs(); break;
-    case 'users': loadUsers(); break;
-    case 'uploads': loadUploads(); break;
-    case 'issues': loadIssues(); break;
-    case 'sessions': loadSessions(); break;
+    case 'users': loadUsers().finally(() => doneLoading('users-container')); break;
+    case 'uploads': loadUploads().finally(() => doneLoading('uploads-stats')); break;
+    case 'issues': loadIssues().finally(() => doneLoading('issues-container')); break;
+    case 'sessions': loadSessions().finally(() => doneLoading('sessions-container')); break;
   }
+}
+
+// The panel containers start with class "loading", which centres the
+// spinner and greys the text. Drop it once real content is in place, or
+// the content inherits the centring.
+function doneLoading(id) {
+  document.getElementById(id).classList.remove('loading');
 }
 
 async function apiFetch(path) {
@@ -501,14 +530,7 @@ async function loadLogs() {
       return;
     }
 
-    container.innerHTML = data.entries.map(e => `
-      <div class="log-entry">
-        <span class="time">${escHtml(fmtTime(e.time))}</span>
-        <span class="level-${escHtml(e.level)}">${escHtml(e.level)}</span>
-        <span class="msg">${escHtml(e.msg)}</span>
-        <span class="detail" style="color:var(--text2)">${escHtml(stripParsed(e.raw, e.time, e.level, e.msg))}</span>
-      </div>
-    `).join('');
+    container.innerHTML = data.entries.map(e => logEntryHtml(e, false)).join('');
   } catch(e) {
     document.getElementById('log-container').innerHTML = `<div class="empty">Error: ${escHtml(e.message)}</div>`;
   }
@@ -523,12 +545,25 @@ document.getElementById('log-search').addEventListener('input', () => {
 document.getElementById('log-level').addEventListener('change', loadLogs);
 document.getElementById('log-date').addEventListener('change', () => { loaded.logs = false; loadLogs(); });
 
-function stripParsed(raw, time, level, msg) {
-  let s = raw;
-  if (time) s = s.replace('time=' + time, '');
-  if (level) s = s.replace('level=' + level, '');
-  if (msg) s = s.replace('msg="' + msg + '"', '').replace('msg=' + msg, '');
-  return s.trim();
+// Renders one parsed log line as a row: time, level, then message and the
+// remaining attributes. The server does the parsing (see parseSlogLine).
+function logEntryHtml(e, withDate) {
+  return `<div class="log-entry log-line">
+    <span class="time">${escHtml(fmtLogTime(e.time, withDate))}</span>
+    <span class="level-${escHtml(e.level)}">${escHtml(e.level)}</span>
+    <span class="body"><span class="msg">${escHtml(e.msg)}</span> <span class="detail">${escHtml(e.detail)}</span></span>
+  </div>`;
+}
+
+// Fixed-width local time, so the columns line up: HH:MM:SS, or
+// YYYY-MM-DD HH:MM:SS with withDate.
+function fmtLogTime(t, withDate) {
+  if (!t) return '';
+  const d = new Date(t);
+  if (isNaN(d)) return t;
+  const p = n => String(n).padStart(2, '0');
+  const time = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return withDate ? `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${time}` : time;
 }
 
 // Users
@@ -719,16 +754,8 @@ async function loadIssues() {
     if (data.log_issues && data.log_issues.length) {
       html += `<h3>📋 Upload-Related Log Errors — ${data.log_issues.length}</h3>`;
       html += '<div class="log-container" style="max-height:400px">';
-      data.log_issues.forEach(e => {
-        html += `
-          <div class="log-entry">
-            <span class="time">${escHtml(fmtTime(e.time))}</span>
-            <span class="level-${escHtml(e.level)}">${escHtml(e.level)}</span>
-            <span class="msg">${escHtml(e.msg)}</span>
-            <span class="detail" style="color:var(--text2);font-size:11px">${escHtml(stripParsed(e.raw, e.time, e.level, e.msg))}</span>
-          </div>
-        `;
-      });
+      // These lines span several days, so show the date with the time.
+      data.log_issues.forEach(e => { html += logEntryHtml(e, true); });
       html += '</div>';
     }
 
@@ -805,14 +832,6 @@ const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'
 function escHtml(s) {
   if (s === null || s === undefined || s === '') return '';
   return String(s).replace(/[&<>"']/g, c => HTML_ESCAPES[c]);
-}
-
-function fmtTime(t) {
-  if (!t) return '';
-  try {
-    const d = new Date(t);
-    return d.toLocaleTimeString();
-  } catch { return t; }
 }
 
 function fmtDate(t) {

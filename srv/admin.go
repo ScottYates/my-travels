@@ -59,8 +59,15 @@ type logEntry struct {
 	Time  string `json:"time"`
 	Level string `json:"level"`
 	Msg   string `json:"msg"`
-	Raw   string `json:"raw"`
+	// Detail is the remaining attributes as "key=value" pairs.
+	Detail string `json:"detail"`
+	// File is the log file the line came from (upload issues only).
+	File string `json:"file,omitempty"`
+	Raw  string `json:"raw"`
 }
+
+// maxUploadIssues caps how many log lines the upload issues panel returns.
+const maxUploadIssues = 500
 
 func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
@@ -143,44 +150,6 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 		"entries": entries,
 		"total":   len(entries),
 	})
-}
-
-func parseSlogLine(line string) logEntry {
-	entry := logEntry{Raw: line}
-
-	// Parse structured slog format: time=... level=... msg="..."
-	if idx := strings.Index(line, "time="); idx >= 0 {
-		rest := line[idx+5:]
-		if sp := strings.IndexByte(rest, ' '); sp > 0 {
-			entry.Time = rest[:sp]
-		}
-	}
-	if idx := strings.Index(line, "level="); idx >= 0 {
-		rest := line[idx+6:]
-		if sp := strings.IndexByte(rest, ' '); sp > 0 {
-			entry.Level = rest[:sp]
-		} else {
-			entry.Level = rest
-		}
-	}
-	if idx := strings.Index(line, "msg="); idx >= 0 {
-		rest := line[idx+4:]
-		if len(rest) > 0 && rest[0] == '"' {
-			// Find closing quote
-			end := strings.Index(rest[1:], "\"")
-			if end >= 0 {
-				entry.Msg = rest[1 : end+1]
-			}
-		} else {
-			if sp := strings.IndexByte(rest, ' '); sp > 0 {
-				entry.Msg = rest[:sp]
-			} else {
-				entry.Msg = rest
-			}
-		}
-	}
-
-	return entry
 }
 
 // ---------------------------------------------------------------------------
@@ -505,38 +474,24 @@ func (s *Server) handleAdminUploadIssues(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		var fileIssues []logEntry
 		for _, line := range lines {
 			if line == "" {
 				continue
 			}
-			// Match upload errors, 4xx/5xx upload responses, and general errors
-			isUploadLine := strings.Contains(line, "upload") ||
-				strings.Contains(line, "Upload") ||
-				strings.Contains(line, "chunked")
-			isErrorLine := strings.Contains(line, "level=ERROR") ||
-				strings.Contains(line, "level=WARN")
-			isUploadError := isUploadLine && isErrorLine
-
-			// Also match any HTTP errors on photo/upload endpoints
-			if !isUploadError {
-				isUploadError = (strings.Contains(line, "path=/api/trips/") && strings.Contains(line, "/photos")) && isErrorLine
-			}
-			if !isUploadError {
-				isUploadError = strings.Contains(line, "path=/api/uploads/") && isErrorLine
-			}
-
-			if isUploadError {
-				issue := parseSlogLine(line)
-				issue.Raw = lf + ": " + line
-				issues = append(issues, issue)
+			issue, attrs := parseSlogEntry(line)
+			if isUploadIssue(issue, attrs) {
+				issue.File = lf
+				fileIssues = append(fileIssues, issue)
 			}
 		}
-	}
-
-	// Most recent first (they come from files already sorted newest-first)
-	// But within each file they're oldest-first, so reverse
-	for i, j := 0, len(issues)-1; i < j; i, j = i+1, j-1 {
-		issues[i], issues[j] = issues[j], issues[i]
+		// Lines in a file are oldest first; the panel shows newest first.
+		for i := len(fileIssues) - 1; i >= 0 && len(issues) < maxUploadIssues; i-- {
+			issues = append(issues, fileIssues[i])
+		}
+		if len(issues) >= maxUploadIssues {
+			break
+		}
 	}
 
 	// Also check for DB records of failed uploads (photos with missing files)
