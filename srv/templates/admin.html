@@ -442,8 +442,8 @@ async function loadOverview() {
 
     document.getElementById('system-info').innerHTML = `
       <div class="stat-grid">
-        <div class="stat-card"><div class="value">${sys.hostname}</div><div class="label">Hostname</div></div>
-        <div class="stat-card"><div class="value">${sys.uptime || 'N/A'}</div><div class="label">Uptime</div></div>
+        <div class="stat-card"><div class="value">${escHtml(sys.hostname)}</div><div class="label">Hostname</div></div>
+        <div class="stat-card"><div class="value">${escHtml(sys.uptime || 'N/A')}</div><div class="label">Uptime</div></div>
         <div class="stat-card"><div class="value">${db.db_size_human}</div><div class="label">DB Size</div></div>
       </div>
     `;
@@ -459,7 +459,7 @@ async function loadOverview() {
       <div class="stat-card"><div class="value">${db.visitors}</div><div class="label">Visitors</div></div>
     `;
   } catch(e) {
-    document.getElementById('system-info').innerHTML = `<div class="empty">Error loading: ${e.message}</div>`;
+    document.getElementById('system-info').innerHTML = `<div class="empty">Error loading: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -503,14 +503,14 @@ async function loadLogs() {
 
     container.innerHTML = data.entries.map(e => `
       <div class="log-entry">
-        <span class="time">${fmtTime(e.time)}</span>
-        <span class="level-${e.level}">${e.level}</span>
+        <span class="time">${escHtml(fmtTime(e.time))}</span>
+        <span class="level-${escHtml(e.level)}">${escHtml(e.level)}</span>
         <span class="msg">${escHtml(e.msg)}</span>
         <span class="detail" style="color:var(--text2)">${escHtml(stripParsed(e.raw, e.time, e.level, e.msg))}</span>
       </div>
     `).join('');
   } catch(e) {
-    document.getElementById('log-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+    document.getElementById('log-container').innerHTML = `<div class="empty">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -547,7 +547,7 @@ async function loadUsers() {
               <span><strong>${u.trip_count}</strong> trips</span>
               <span><strong>${u.photo_count}</strong> photos</span>
               <span><strong>${u.stop_count}</strong> stops</span>
-              <button class="btn btn-sm" onclick="impersonateUser('${escAttr(u.user_id)}', '${escAttr(u.email)}')">🔑 Login as</button>
+              <button class="btn btn-sm" data-user-id="${escHtml(u.user_id)}" data-email="${escHtml(u.email)}" onclick="impersonateUser(this.dataset.userId, this.dataset.email)">🔑 Login as</button>
             </div>
           </div>
           ${u.trips && u.trips.length ? `
@@ -561,7 +561,7 @@ async function loadUsers() {
                   <td>${t.photo_count}</td>
                   <td>${t.video_count}</td>
                   <td>${fmtDate(t.updated_at)}</td>
-                  <td style="font-family:monospace;font-size:11px">${t.share_id.substring(0,8)}...</td>
+                  <td style="font-family:monospace;font-size:11px">${escHtml(t.share_id.substring(0,8))}...</td>
                 </tr>
               `).join('')}
             </tbody>
@@ -596,7 +596,7 @@ async function loadUsers() {
 
     container.innerHTML = html || '<div class="empty">No users found</div>';
   } catch(e) {
-    document.getElementById('users-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+    document.getElementById('users-container').innerHTML = `<div class="empty">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -640,7 +640,7 @@ async function loadUploads() {
 
     el.innerHTML = html;
   } catch(e) {
-    document.getElementById('uploads-stats').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+    document.getElementById('uploads-stats').innerHTML = `<div class="empty">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -675,8 +675,8 @@ async function loadIssues() {
       data.log_issues.forEach(e => {
         html += `
           <div class="log-entry">
-            <span class="time">${fmtTime(e.time)}</span>
-            <span class="level-${e.level}">${e.level}</span>
+            <span class="time">${escHtml(fmtTime(e.time))}</span>
+            <span class="level-${escHtml(e.level)}">${escHtml(e.level)}</span>
             <span class="msg">${escHtml(e.msg)}</span>
             <span class="detail" style="color:var(--text2);font-size:11px">${escHtml(stripParsed(e.raw, e.time, e.level, e.msg))}</span>
           </div>
@@ -691,7 +691,7 @@ async function loadIssues() {
 
     container.innerHTML = html;
   } catch(e) {
-    document.getElementById('issues-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+    document.getElementById('issues-container').innerHTML = `<div class="empty">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -723,7 +723,7 @@ async function loadSessions() {
       </table>
     `;
   } catch(e) {
-    document.getElementById('sessions-container').innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+    document.getElementById('sessions-container').innerHTML = `<div class="empty">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -753,16 +753,11 @@ async function stopImpersonatingAdmin() {
 }
 
 // Utils
+// Escapes text for HTML content and quoted attribute values.
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escHtml(s) {
-  if (!s) return '';
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
-}
-
-function escAttr(s) {
-  if (!s) return '';
-  return s.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  if (s === null || s === undefined || s === '') return '';
+  return String(s).replace(/[&<>"']/g, c => HTML_ESCAPES[c]);
 }
 
 function fmtTime(t) {

@@ -48,34 +48,8 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server, string) {
 	// (the sqlite handle holds a lock on the file on Windows).
 	t.Cleanup(func() { s.DB.Close() })
 
-	// Build the same handler chain Serve() builds in production.
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", s.handleIndex)
-	mux.HandleFunc("GET /share/{shareID}", s.handleIndex)
-	mux.HandleFunc("GET /present/{shareID}", s.handleIndex)
-	mux.HandleFunc("GET /api/me", s.handleMe)
-	mux.HandleFunc("GET /auth/google/login", s.handleGoogleLogin)
-	mux.HandleFunc("GET /auth/google/callback", s.handleGoogleCallback)
-	mux.HandleFunc("POST /auth/logout", s.handleLogout)
-	mux.HandleFunc("GET /api/trips", s.handleListTrips)
-	mux.HandleFunc("POST /api/trips", s.handleCreateTrip)
-	mux.HandleFunc("GET /api/trips/{id}", s.handleGetTrip)
-	mux.HandleFunc("PUT /api/trips/{id}", s.handleUpdateTrip)
-	mux.HandleFunc("DELETE /api/trips/{id}", s.handleDeleteTrip)
-	mux.HandleFunc("GET /api/share/{shareID}", s.handleGetTripByShareID)
-	mux.HandleFunc("PUT /api/trips/{id}/present-slug", s.handleUpdatePresentSlug)
-	mux.HandleFunc("GET /api/present/{slug}", s.handleGetTripByPresentSlug)
-	mux.HandleFunc("POST /api/trips/{id}/stops", s.handleCreateStop)
-	mux.HandleFunc("PUT /api/stops/{id}", s.handleUpdateStop)
-	mux.HandleFunc("DELETE /api/stops/{id}", s.handleDeleteStop)
-	mux.HandleFunc("POST /api/photos/{photoID}/comments", s.handleCreateComment)
-	mux.HandleFunc("PUT /api/comments/{id}", s.handleUpdateComment)
-	mux.HandleFunc("DELETE /api/comments/{id}", s.handleDeleteComment)
-	mux.HandleFunc("POST /api/admin/impersonate", s.handleAdminImpersonate)
-	mux.HandleFunc("POST /api/admin/stop-impersonate", s.handleAdminStopImpersonate)
-
-	var handler http.Handler = mux
-	handler = s.csrfCheck(handler)
+	// Use the same handler chain Serve() uses in production.
+	handler := s.Handler()
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 	return s, ts, tempDir

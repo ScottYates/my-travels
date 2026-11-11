@@ -359,8 +359,13 @@ func (s *Server) handleImportTrip(w http.ResponseWriter, r *http.Request) {
 		newPhotoID := uuid.New().String()
 		photoIDMap[p.ID] = newPhotoID
 
-		// Generate a new filename, preserving the extension.
-		ext := filepath.Ext(p.Filename)
+		// Generate a new filename. The manifest is untrusted, so only an
+		// allowlisted extension is kept; any other file is stored as .bin
+		// and is only ever served as a download.
+		ext, ok := uploadExt(p.Filename)
+		if !ok {
+			ext = unknownUploadExt
+		}
 		newFilename := uuid.New().String() + ext
 		photoFileMap[p.Filename] = newFilename
 
@@ -444,7 +449,7 @@ func (s *Server) handleImportTrip(w http.ResponseWriter, r *http.Request) {
 			TripID:    newTripID,
 			Name:      rt.Name,
 			Geojson:   rt.Geojson,
-			Color:     rt.Color,
+			Color:     safeRouteColor(rt.Color),
 			CreatedAt: rt.CreatedAt,
 		}); err != nil {
 			slog.Error("import: create route", "err", err, "old_id", rt.ID)

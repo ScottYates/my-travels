@@ -2780,8 +2780,8 @@ function renderUserInfo() {
   if (state.readOnly || state.presentOnly) return;
   if (currentUser) {
     const initials = (currentUser.email || '?').substring(0, 1).toUpperCase();
-    let html = '<div class="user-avatar">' + initials + '</div>' +
-      '<span class="user-email" title="' + currentUser.email + '">' + currentUser.email + '</span>';
+    let html = '<div class="user-avatar">' + escapeHtml(initials) + '</div>' +
+      '<span class="user-email" title="' + escapeHtml(currentUser.email) + '">' + escapeHtml(currentUser.email) + '</span>';
     if (IS_ADMIN) {
       html += '<a href="/admin" class="logout-btn" style="color:var(--accent);" title="Admin Panel">🛠 Admin</a>';
     }
@@ -2902,11 +2902,13 @@ function formatDate(d) {
   return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Escapes text for use in HTML content and in quoted attribute values.
+// Quotes must be escaped too: many callers build attributes such as
+// alt="..." and src="..." by string concatenation.
+const HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escapeHtml(s) {
   if (!s) return '';
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+  return String(s).replace(/[&<>"']/g, c => HTML_ESCAPES[c]);
 }
 
 // ---------------------------------------------------------------

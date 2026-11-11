@@ -447,8 +447,10 @@ func (s *Server) requirePhotoOwner(w http.ResponseWriter, r *http.Request, photo
 	return photo, u, true
 }
 
-// Serve starts the HTTP server with all configured routes.
-func (s *Server) Serve(addr string) error {
+// Handler builds the full HTTP handler: all routes plus the middleware
+// chain. Serve uses it, and so do the tests, so both exercise the same
+// routing and middleware.
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// SPA routes
@@ -465,8 +467,9 @@ func (s *Server) Serve(addr string) error {
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir(s.StaticDir))))
 
-	// Uploaded photos
-	mux.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.UploadDir))))
+	// Uploaded photos. Served one file at a time, with no directory
+	// listing; see handleUploadFile.
+	mux.HandleFunc("GET /uploads/{path...}", s.handleUploadFile)
 
 	// Photo thumbnails (128px, generated on demand and cached)
 	mux.HandleFunc("GET /thumb/{filename...}", s.handleThumbnail)
@@ -539,12 +542,18 @@ func (s *Server) Serve(addr string) error {
 	mux.HandleFunc("POST /api/admin/impersonate", s.handleAdminImpersonate)
 	mux.HandleFunc("POST /api/admin/stop-impersonate", s.handleAdminStopImpersonate)
 
-	slog.Info("starting server", "addr", addr)
 	var handler http.Handler = mux
 	handler = s.csrfCheck(handler)
 	if len(s.redirects) > 0 {
 		handler = s.redirectMiddleware(handler)
 	}
+	return handler
+}
+
+// Serve starts the HTTP server with all configured routes.
+func (s *Server) Serve(addr string) error {
+	slog.Info("starting server", "addr", addr)
+	handler := s.Handler()
 
 	// Background cleanup of abandoned chunked uploads. Cancelled when Serve
 	// returns (which happens when http.ListenAndServe exits).
@@ -1636,10 +1645,12 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate filename preserving extension
-	ext := strings.ToLower(filepath.Ext(header.Filename))
-	if ext == "" {
-		ext = ".jpg"
+	// Generate the stored filename. Only allowlisted image/video
+	// extensions are kept: the extension decides how the file is served.
+	ext, ok := uploadExt(header.Filename)
+	if !ok {
+		jsonError(w, "unsupported file type", http.StatusUnsupportedMediaType)
+		return
 	}
 	filename := uuid.New().String() + ext
 
@@ -1647,8 +1658,8 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 	videoUpload := isVideoFile(header.Filename) || isVideoMIME(header.Header.Get("Content-Type"))
 
 	// Save to upload dir
-	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is uuid.New().String() + ext.
-	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is uuid.New().String() + ext.
+	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is a UUID plus an allowlisted extension.
+	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is a UUID plus an allowlisted extension.
 		slog.Error("upload: write file to disk", "error", err, "path", dstPath)
 		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
@@ -1798,6 +1809,10 @@ func (s *Server) handleChunkedInit(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "file_name is required", http.StatusBadRequest)
 		return
 	}
+	if _, ok := uploadExt(body.FileName); !ok {
+		jsonError(w, "unsupported file type", http.StatusUnsupportedMediaType)
+		return
+	}
 
 	uploadID := uuid.New().String()
 	tmpPath := filepath.Join(s.UploadDir, "_chunks_"+uploadID)
@@ -1918,18 +1933,20 @@ func (s *Server) handleChunkedComplete(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("chunked upload: completing", "upload_id", uploadID, "file_name", cu.FileName, "bytes", len(fileData))
 
-	// Generate final filename
-	ext := strings.ToLower(filepath.Ext(cu.FileName))
-	if ext == "" {
-		ext = ".jpg"
+	// Generate final filename (extension was checked at init; check again
+	// so this handler is safe on its own).
+	ext, ok := uploadExt(cu.FileName)
+	if !ok {
+		jsonError(w, "unsupported file type", http.StatusUnsupportedMediaType)
+		return
 	}
 	filename := uuid.New().String() + ext
 
 	videoUpload := isVideoFile(cu.FileName) || isVideoMIME(cu.MimeType)
 
 	// Save to upload dir
-	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is uuid.New().String() + ext.
-	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is uuid.New().String() + ext.
+	dstPath := filepath.Join(s.UploadDir, filename)                // #nosec G703 -- filename is a UUID plus an allowlisted extension.
+	if err := os.WriteFile(dstPath, fileData, 0o644); err != nil { // #nosec G304,G703 -- filename is a UUID plus an allowlisted extension.
 		slog.Error("chunked complete: write final file", "error", err, "path", dstPath)
 		jsonError(w, "failed to save file", http.StatusInternalServerError)
 		return
@@ -3240,9 +3257,7 @@ func (s *Server) handleCreateRoute(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Route"
 	}
-	if color == "" {
-		color = "#3388ff"
-	}
+	color = safeRouteColor(color)
 	if geojson == "" {
 		jsonError(w, "geojson is required", http.StatusBadRequest)
 		return
