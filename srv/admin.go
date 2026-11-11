@@ -43,7 +43,8 @@ func (s *Server) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 	}
 	tmpl, err := template.ParseFiles(filepath.Join(s.TemplatesDir, "admin.html"))
 	if err != nil {
-		http.Error(w, "template error: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("admin: parse template", "error", err)
+		http.Error(w, "template error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -219,7 +220,8 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		SELECT DISTINCT user_id, email FROM sessions ORDER BY email
 	`)
 	if err != nil {
-		jsonError(w, "db error: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("admin: list users", "error", err)
+		jsonError(w, "database error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
@@ -568,11 +570,12 @@ func (s *Server) handleAdminSessions(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := s.DB.QueryContext(r.Context(), `
 		SELECT token, user_id, email, created_at, expires_at,
-		       CASE WHEN expires_at > datetime('now') THEN 1 ELSE 0 END as active
+		       CASE WHEN datetime(expires_at) > datetime('now') THEN 1 ELSE 0 END as active
 		FROM sessions ORDER BY created_at DESC
 	`)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		slog.Error("admin: list sessions", "error", err)
+		jsonError(w, "database error", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()

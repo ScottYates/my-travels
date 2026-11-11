@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,10 @@ const (
 	googleTokenURL = "https://oauth2.googleapis.com/token"        // #nosec G101 -- URL constant, not a credential.
 )
 
+// googleHTTPClient is used for calls to Google. http.DefaultClient has no
+// timeout, so a stalled connection would hold the login request open.
+var googleHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 // googleTokenResponse is the response from Google's token endpoint.
 type googleTokenResponse struct {
 	IDToken string `json:"id_token"`
@@ -36,28 +41,31 @@ type googleTokenResponse struct {
 
 // exchangeGoogleCode exchanges an authorization code for tokens.
 func exchangeGoogleCode(ctx context.Context, code, clientID, clientSecret, redirectURI string) (*googleTokenResponse, error) {
-	data := "code=" + code +
-		"&client_id=" + clientID +
-		"&client_secret=" + clientSecret +
-		"&redirect_uri=" + redirectURI +
-		"&grant_type=authorization_code"
+	// url.Values encodes each value. The code comes from the callback
+	// query string and must not be able to add parameters of its own.
+	form := url.Values{}
+	form.Set("code", code)
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
+	form.Set("redirect_uri", redirectURI)
+	form.Set("grant_type", "authorization_code")
 
 	// #nosec G704 -- googleTokenURL is a hardcoded constant, not user input.
-	req, err := http.NewRequestWithContext(ctx, "POST", googleTokenURL, strings.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, "POST", googleTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	// #nosec G704 -- googleTokenURL is a hardcoded constant; Do(req) just dispatches it.
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := googleHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token exchange request: %w", err)
 	}
 	defer resp.Body.Close() // #nosec G104 -- best-effort close
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return nil, fmt.Errorf("token exchange failed (%d): %s", resp.StatusCode, string(body))
 	}
 
@@ -100,11 +108,15 @@ func fetchGoogleKeys(ctx context.Context) (*jwks, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := googleHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch google certs: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch google certs: status %d", resp.StatusCode)
+	}
 
 	var keys jwks
 	if err := json.NewDecoder(resp.Body).Decode(&keys); err != nil {

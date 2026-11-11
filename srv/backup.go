@@ -472,9 +472,21 @@ func (s *Server) handleImportTrip(w http.ResponseWriter, r *http.Request) {
 	// Create comments
 	for _, c := range manifest.Comments {
 		newCommentID := uuid.New().String()
-		newPhotoID := c.PhotoID
-		if mapped, ok := photoIDMap[c.PhotoID]; ok {
-			newPhotoID = mapped
+		// A comment must point at a photo from this archive. Anything
+		// else would reference a photo in some other trip.
+		newPhotoID, ok := photoIDMap[c.PhotoID]
+		if !ok {
+			slog.Warn("import: skipping comment for unknown photo", "old_id", c.ID)
+			continue
+		}
+		// Same length limits as comments created through the API.
+		c.Author = truncateUTF8(strings.TrimSpace(c.Author), maxCommentAuthorLen)
+		c.Body = truncateUTF8(strings.TrimSpace(c.Body), maxCommentBodyLen)
+		if c.Author == "" {
+			c.Author = "Anonymous"
+		}
+		if c.Body == "" {
+			continue
 		}
 		if err := q.CreateComment(ctx, dbgen.CreateCommentParams{
 			ID:        newCommentID,

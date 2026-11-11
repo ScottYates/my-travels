@@ -659,6 +659,14 @@ func (s *Server) csrfCheck(next http.Handler) http.Handler {
 			return
 		}
 
+		// Browsers label every request with where it came from. A
+		// cross-site label is enough to refuse, whatever Origin says.
+		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+			slog.Warn("csrf: cross-site request", "path", r.URL.Path)
+			jsonError(w, "cross-origin request blocked", http.StatusForbidden)
+			return
+		}
+
 		origin := getPublicOrigin(r)
 
 		if o := r.Header.Get("Origin"); o != "" {
@@ -1007,8 +1015,12 @@ func (s *Server) handleListTrips(w http.ResponseWriter, r *http.Request) {
 	var trips []dbgen.Trip
 	var err error
 	if u != nil {
-		// Auto-claim any orphaned trips (from before auth was added)
-		_ = q.ClaimOrphanedTrips(r.Context(), &u.UserID)
+		// Trips created before login existed have no owner. Only the
+		// admin may claim them; otherwise the first person to log in
+		// would take them all.
+		if real := s.getRealUser(r); real != nil && real.UserID == u.UserID && s.isAdminEmail(real.Email) {
+			_ = q.ClaimOrphanedTrips(r.Context(), &u.UserID)
+		}
 
 		trips, err = q.ListTripsByUser(r.Context(), &u.UserID)
 	} else {
@@ -1104,6 +1116,13 @@ func (s *Server) handleUpdateTrip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := dbgen.New(s.DB)
+
+	if body.CoverPhotoID != nil && *body.CoverPhotoID != "" {
+		if p, err := q.GetPhoto(r.Context(), *body.CoverPhotoID); err != nil || p.TripID != id {
+			jsonError(w, "cover photo does not belong to this trip", http.StatusBadRequest)
+			return
+		}
+	}
 
 	// Preserve existing camera defaults if not provided in this update
 	camH := body.DefaultCamHeading
@@ -1717,6 +1736,11 @@ func (s *Server) handleUploadPhoto(w http.ResponseWriter, r *http.Request) {
 
 	var stopID *string
 	if v := r.FormValue("stop_id"); v != "" {
+		if stop, err := q.GetStop(r.Context(), v); err != nil || stop.TripID != tripID {
+			s.removeUploadFiles(filename)
+			jsonError(w, "stop does not belong to this trip", http.StatusBadRequest)
+			return
+		}
 		stopID = &v
 	}
 
@@ -2148,7 +2172,8 @@ func (s *Server) evictExpiredChunkedUploads(now time.Time) int {
 
 func (s *Server) handleUpdatePhoto(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, _, ok := s.requirePhotoOwner(w, r, id); !ok {
+	existing, _, ok := s.requirePhotoOwner(w, r, id)
+	if !ok {
 		return
 	}
 
@@ -2175,6 +2200,13 @@ func (s *Server) handleUpdatePhoto(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonError(w, "failed to get photo", http.StatusInternalServerError)
 		return
+	}
+
+	if body.StopID != nil && *body.StopID != "" {
+		if stop, err := q.GetStop(r.Context(), *body.StopID); err != nil || stop.TripID != existing.TripID {
+			jsonError(w, "stop does not belong to this trip", http.StatusBadRequest)
+			return
+		}
 	}
 
 	if err := q.UpdatePhoto(r.Context(), dbgen.UpdatePhotoParams{
@@ -3062,12 +3094,8 @@ func (s *Server) createComment(w http.ResponseWriter, r *http.Request, tripID, p
 	}
 
 	// Limit lengths
-	if len(body.Author) > 50 {
-		body.Author = body.Author[:50]
-	}
-	if len(body.Body) > 500 {
-		body.Body = body.Body[:500]
-	}
+	body.Author = truncateUTF8(body.Author, maxCommentAuthorLen)
+	body.Body = truncateUTF8(body.Body, maxCommentBodyLen)
 
 	// Reject URLs in author or body. Spammers put links in both fields
 	// even though the body is the obvious one — covering both keeps
@@ -3141,12 +3169,8 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 	if body.Author == "" {
 		body.Author = "Anonymous"
 	}
-	if len(body.Author) > 50 {
-		body.Author = body.Author[:50]
-	}
-	if len(body.Body) > 500 {
-		body.Body = body.Body[:500]
-	}
+	body.Author = truncateUTF8(body.Author, maxCommentAuthorLen)
+	body.Body = truncateUTF8(body.Body, maxCommentBodyLen)
 
 	// Same URL rejection as create — keeps the rule consistent regardless
 	// of whether the comment is being created or edited.

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"image"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rwcarlsen/goexif/exif"
 )
@@ -109,6 +111,15 @@ func securityHeaders(next http.Handler) http.Handler {
 // extractEXIFFrom reads EXIF GPS coordinates and timestamp from r. Only
 // the first maxEXIFBytes are read: the parser buffers TIFF input in memory.
 func extractEXIFFrom(r io.Reader) (lat, lng *float64, takenAt *time.Time) {
+	// goexif is unmaintained and has panicked on malformed input. A bad
+	// file should upload without metadata, not fail the request.
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Warn("exif: parser panicked", "panic", p)
+			lat, lng, takenAt = nil, nil, nil
+		}
+	}()
+
 	x, err := exif.Decode(io.LimitReader(r, maxEXIFBytes))
 	if err != nil {
 		return nil, nil, nil
@@ -159,4 +170,21 @@ func (s *Server) uploadMeta(dstPath, filename string, video bool) (lat, lng *flo
 		os.WriteFile(filepath.Join(thumbDir, filename+".jpg"), thumbData, 0o644) // #nosec G306 -- thumbnails are public by design.
 	}
 	return
+}
+
+// Comment field limits, in bytes.
+const (
+	maxCommentAuthorLen = 50
+	maxCommentBodyLen   = 500
+)
+
+// truncateUTF8 cuts s to at most max bytes without splitting a character.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }

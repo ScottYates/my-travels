@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"srv.exe.dev/db/dbgen"
 )
@@ -539,5 +540,109 @@ func TestNoAdminWithoutAdminEmail(t *testing.T) {
 		map[string]string{"user_id": "x", "email": "x@test.com"}, nil)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("status %d, want 403", resp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Low-severity fixes
+// ---------------------------------------------------------------------------
+
+// Sessions store expires_at as RFC 3339. Comparing that as text against
+// SQLite's datetime('now') kept sessions alive until the end of the
+// expiry day.
+func TestSessionExpiresOnTime(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	q := dbgen.New(s.DB)
+	now := time.Now().UTC()
+	mk := func(token string, expires time.Time) {
+		if err := q.CreateSession(t.Context(), dbgen.CreateSessionParams{
+			Token: token, UserID: token, Email: token + "@test.com",
+			CreatedAt: now.Format(time.RFC3339), ExpiresAt: expires.Format(time.RFC3339),
+		}); err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+	}
+	mk("expired", now.Add(-time.Minute))
+	mk("valid", now.Add(time.Minute))
+
+	var me struct {
+		Authenticated bool `json:"authenticated"`
+	}
+	doRequest(t, ts, "GET", "/api/me", "expired", "", nil, &me)
+	if me.Authenticated {
+		t.Errorf("session expired a minute ago is still accepted")
+	}
+	doRequest(t, ts, "GET", "/api/me", "valid", "", nil, &me)
+	if !me.Authenticated {
+		t.Errorf("unexpired session rejected")
+	}
+}
+
+func TestOrphanTripsClaimedOnlyByAdmin(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	if _, err := s.DB.Exec(`INSERT INTO trips (id, share_id, title) VALUES ('orphan', 'orphan-share', 'old')`); err != nil {
+		t.Fatalf("insert orphan: %v", err)
+	}
+	user := insertSession(t, s, "u1", "u1@test.com")
+	admin := insertSession(t, s, "adm", "admin@test.com")
+
+	var trips []dbgen.Trip
+	doRequest(t, ts, "GET", "/api/trips", user, "", nil, &trips)
+	if len(trips) != 0 {
+		t.Errorf("ordinary user claimed an ownerless trip")
+	}
+	doRequest(t, ts, "GET", "/api/trips", admin, "", nil, &trips)
+	if len(trips) != 1 || trips[0].ID != "orphan" {
+		t.Errorf("admin did not claim the ownerless trip: %+v", trips)
+	}
+}
+
+func TestCSRFBlocksSecFetchSiteCrossSite(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	token := insertSession(t, s, "u1", "u1@test.com")
+	req, _ := http.NewRequest("POST", ts.URL+"/api/trips", strings.NewReader(`{"title":"x"}`))
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.AddCookie(cookieValue("session", token))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("status %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestTruncateUTF8(t *testing.T) {
+	if got := truncateUTF8("héllo", 2); got != "h" {
+		t.Errorf("got %q, want %q", got, "h")
+	}
+	if got := truncateUTF8("abc", 10); got != "abc" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestCrossTripReferencesRejected(t *testing.T) {
+	_, ts, tokA, tokB, tripA, tripB := twoUsers(t)
+	photoA := uploadTestPhoto(t, ts, tokA, tripA.ID, "a.jpg")
+	photoB := uploadTestPhoto(t, ts, tokB, tripB.ID, "b.jpg")
+	var stopA dbgen.Stop
+	doRequest(t, ts, "POST", "/api/trips/"+tripA.ID+"/stops", tokA, "",
+		map[string]any{"title": "s", "lat": 1.0, "lng": 1.0}, &stopA)
+
+	resp := doRequest(t, ts, "PUT", "/api/trips/"+tripB.ID, tokB, "",
+		map[string]any{"title": "T", "cover_photo_id": photoA.ID}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("foreign cover photo: status %d, want 400", resp.StatusCode)
+	}
+	resp = doRequest(t, ts, "PUT", "/api/photos/"+photoB.ID, tokB, "",
+		map[string]any{"stop_id": stopA.ID}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("foreign stop on photo: status %d, want 400", resp.StatusCode)
+	}
+	resp = doRequest(t, ts, "PUT", "/api/trips/"+tripB.ID, tokB, "",
+		map[string]any{"title": "T", "cover_photo_id": photoB.ID}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("own cover photo: status %d, want 200", resp.StatusCode)
 	}
 }
