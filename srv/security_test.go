@@ -646,3 +646,154 @@ func TestCrossTripReferencesRejected(t *testing.T) {
 		t.Errorf("own cover photo: status %d, want 200", resp.StatusCode)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Admin: user list and orphan file cleanup
+// ---------------------------------------------------------------------------
+
+type adminUsersResp struct {
+	Users []adminUser `json:"users"`
+}
+
+func findAdminUser(users []adminUser, id string) *adminUser {
+	for i := range users {
+		if users[i].UserID == id {
+			return &users[i]
+		}
+	}
+	return nil
+}
+
+// A user's trips must stay visible in the admin list after their sessions
+// have expired and been purged.
+func TestAdminUsersListSurvivesSessionPurge(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	admin := insertSession(t, s, "adm", "admin@test.com")
+	q := dbgen.New(s.DB)
+	ctx := t.Context()
+	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+
+	// "known" logged in through the real flow at some point (users row),
+	// "legacy" only ever had a session row. Both own a trip, and both
+	// sessions have since expired.
+	if err := q.UpsertUser(ctx, dbgen.UpsertUserParams{UserID: "known", Email: "known@test.com", FirstSeen: past, LastLogin: past}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"known", "legacy"} {
+		if err := q.CreateSession(ctx, dbgen.CreateSessionParams{Token: "tok-" + id, UserID: id, Email: id + "@test.com", CreatedAt: past, ExpiresAt: past}); err != nil {
+			t.Fatal(err)
+		}
+		uid := id
+		if err := q.CreateTrip(ctx, dbgen.CreateTripParams{ID: "trip-" + id, ShareID: "share-" + id, Title: "Trip of " + id,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(), UserID: &uid}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// This is what the next login by anyone does.
+	if err := q.DeleteExpiredSessions(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp adminUsersResp
+	doRequest(t, ts, "GET", "/api/admin/users", admin, "", nil, &resp)
+
+	known := findAdminUser(resp.Users, "known")
+	if known == nil || known.Email != "known@test.com" || known.TripCount != 1 {
+		t.Errorf("known user = %+v, want email and 1 trip", known)
+	}
+	// No email is recorded anywhere for this one any more, but the trip
+	// must still be listed.
+	legacy := findAdminUser(resp.Users, "legacy")
+	if legacy == nil || legacy.TripCount != 1 {
+		t.Errorf("legacy user = %+v, want 1 trip", legacy)
+	}
+	if findAdminUser(resp.Users, "adm") == nil {
+		t.Errorf("user with only a live session missing from list")
+	}
+}
+
+func TestAdminDeleteOrphanFiles(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	admin := insertSession(t, s, "adm", "admin@test.com")
+	user := insertSession(t, s, "u1", "u1@test.com")
+	trip := createTestTrip(t, ts, user)
+	photo := uploadTestPhoto(t, ts, user, trip.ID, "keep.jpg")
+	// Give the real photo a cached thumbnail.
+	get(t, ts.URL+"/thumb/"+photo.Filename).Body.Close()
+
+	old := time.Now().Add(-2 * time.Hour)
+	write := func(rel string, age time.Time) string {
+		p := filepath.Join(s.UploadDir, rel)
+		if err := os.WriteFile(p, []byte("12345"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		os.Chtimes(p, age, age)
+		return p
+	}
+	orphan := write("orphan.jpg", old)
+	orphanThumb := write(filepath.Join("thumbs", "orphan.jpg"), old)
+	recent := write("recent.jpg", time.Now())
+	// Make the real photo old too, so only the DB reference protects it.
+	os.Chtimes(filepath.Join(s.UploadDir, photo.Filename), old, old)
+
+	del := func(token string, files []string, dst any) int {
+		return doRequest(t, ts, "POST", "/api/admin/orphan-files/delete", token, "", map[string]any{"files": files}, dst).StatusCode
+	}
+
+	if code := del(user, []string{"orphan.jpg"}, nil); code != http.StatusForbidden {
+		t.Fatalf("non-admin: status %d, want 403", code)
+	}
+
+	var out struct {
+		Deleted           int   `json:"deleted"`
+		FreedBytes        int64 `json:"freed_bytes"`
+		SkippedReferenced int   `json:"skipped_referenced"`
+		SkippedRecent     int   `json:"skipped_recent"`
+		SkippedOther      int   `json:"skipped_other"`
+	}
+	code := del(admin, []string{"orphan.jpg", "recent.jpg", photo.Filename, "../test.sqlite3", "thumbs/" + photo.Filename, "missing.jpg"}, &out)
+	if code != http.StatusOK {
+		t.Fatalf("admin delete: status %d", code)
+	}
+	if out.Deleted != 1 || out.SkippedRecent != 1 || out.SkippedReferenced != 1 || out.SkippedOther != 3 || out.FreedBytes != 10 {
+		t.Errorf("result = %+v", out)
+	}
+
+	gone := func(p string) bool { _, err := os.Stat(p); return os.IsNotExist(err) }
+	if !gone(orphan) || !gone(orphanThumb) {
+		t.Errorf("orphan file or its thumbnail still on disk")
+	}
+	if gone(recent) {
+		t.Errorf("recently modified file was deleted")
+	}
+	if gone(filepath.Join(s.UploadDir, photo.Filename)) || gone(filepath.Join(s.UploadDir, "thumbs", photo.Filename)) {
+		t.Errorf("a real photo or its thumbnail was deleted")
+	}
+
+	// The listing reports the remaining orphan and its size.
+	var stats uploadStats
+	doRequest(t, ts, "GET", "/api/admin/uploads", admin, "", nil, &stats)
+	if len(stats.OrphanFiles) != 1 || stats.OrphanFiles[0] != "recent.jpg" || stats.OrphanSizeBytes != 5 {
+		t.Errorf("orphans after delete = %v (%d bytes)", stats.OrphanFiles, stats.OrphanSizeBytes)
+	}
+}
+
+// With no photo rows, every file looks like an orphan. That is what a
+// server pointed at the wrong database looks like, so nothing is deleted.
+func TestAdminDeleteOrphanFilesRefusesEmptyDB(t *testing.T) {
+	s, ts, _ := newTestServer(t)
+	admin := insertSession(t, s, "adm", "admin@test.com")
+	p := filepath.Join(s.UploadDir, "photo.jpg")
+	os.WriteFile(p, []byte("x"), 0o644)
+	old := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(p, old, old)
+
+	resp := doRequest(t, ts, "POST", "/api/admin/orphan-files/delete", admin, "", map[string]any{"files": []string{"photo.jpg"}}, nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status %d, want 409", resp.StatusCode)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Errorf("file deleted despite empty database")
+	}
+}

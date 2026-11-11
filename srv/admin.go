@@ -215,9 +215,22 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get all distinct users from sessions (current and past)
+	// Every user we know of: anyone recorded at login, anyone with a
+	// session, and anyone who owns a trip. Trip owners are included so a
+	// trip is never hidden just because its owner's sessions have been
+	// purged; for those the email may be unknown until they log in again.
 	rows, err := s.DB.QueryContext(r.Context(), `
-		SELECT DISTINCT user_id, email FROM sessions ORDER BY email
+		SELECT ids.user_id,
+		       COALESCE(u.email,
+		                (SELECT s.email FROM sessions s WHERE s.user_id = ids.user_id ORDER BY s.created_at DESC LIMIT 1),
+		                '') AS email
+		FROM (
+			SELECT user_id FROM users
+			UNION SELECT user_id FROM sessions
+			UNION SELECT user_id FROM trips WHERE user_id IS NOT NULL
+		) ids
+		LEFT JOIN users u ON u.user_id = ids.user_id
+		ORDER BY email = '', email
 	`)
 	if err != nil {
 		slog.Error("admin: list users", "error", err)
@@ -231,6 +244,9 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 		var u adminUser
 		if err := rows.Scan(&u.UserID, &u.Email); err != nil {
 			continue
+		}
+		if u.Email == "" {
+			u.Email = "(email unknown) " + u.UserID
 		}
 
 		// Get trips for this user
@@ -298,7 +314,10 @@ type uploadStats struct {
 	VideoFiles     int      `json:"video_files"`
 	ThumbFiles     int      `json:"thumb_files"`
 	OrphanFiles    []string `json:"orphan_files"`
-	MissingFiles   []string `json:"missing_files"`
+	// OrphanSizeBytes is the combined size of OrphanFiles.
+	OrphanSizeBytes int64    `json:"orphan_size_bytes"`
+	OrphanSizeHuman string   `json:"orphan_size_human"`
+	MissingFiles    []string `json:"missing_files"`
 }
 
 func (s *Server) handleAdminUploads(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +329,7 @@ func (s *Server) handleAdminUploads(w http.ResponseWriter, r *http.Request) {
 
 	// Walk the uploads directory
 	var diskFiles = make(map[string]bool)
+	diskSizes := make(map[string]int64)
 	filepath.WalkDir(s.UploadDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
@@ -333,6 +353,9 @@ func (s *Server) handleAdminUploads(w http.ResponseWriter, r *http.Request) {
 		}
 		stats.TotalFiles++
 		diskFiles[d.Name()] = true
+		if info != nil {
+			diskSizes[d.Name()] = info.Size()
+		}
 
 		ext := strings.ToLower(filepath.Ext(d.Name()))
 		switch ext {
@@ -346,25 +369,24 @@ func (s *Server) handleAdminUploads(w http.ResponseWriter, r *http.Request) {
 
 	stats.TotalSizeHuman = humanBytes(stats.TotalSizeBytes)
 
-	// Get all filenames from DB
-	dbFiles := make(map[string]bool)
-	rows, err := s.DB.QueryContext(r.Context(), "SELECT filename FROM photos")
-	if err == nil {
-		for rows.Next() {
-			var fn string
-			rows.Scan(&fn)
-			dbFiles[fn] = true
-		}
-		rows.Close()
+	// Get all filenames from DB. If this fails, stop: an empty set would
+	// report every file on disk as an orphan.
+	dbFiles, err := s.photoFilenames(r.Context())
+	if err != nil {
+		slog.Error("admin: list photo filenames", "error", err)
+		jsonError(w, "database error", http.StatusInternalServerError)
+		return
 	}
 
 	// Orphan files: on disk but not in DB
 	for fn := range diskFiles {
 		if !dbFiles[fn] {
 			stats.OrphanFiles = append(stats.OrphanFiles, fn)
+			stats.OrphanSizeBytes += diskSizes[fn]
 		}
 	}
 	sort.Strings(stats.OrphanFiles)
+	stats.OrphanSizeHuman = humanBytes(stats.OrphanSizeBytes)
 
 	// Missing files: in DB but not on disk
 	for fn := range dbFiles {

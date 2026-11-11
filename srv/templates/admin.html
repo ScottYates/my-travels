@@ -617,8 +617,13 @@ async function loadUploads() {
     `;
 
     if (data.orphan_files && data.orphan_files.length) {
+      orphanFiles = data.orphan_files;
       html += `
-        <h3>⚠️ Orphan Files (on disk but not in DB) — ${data.orphan_files.length}</h3>
+        <h3>⚠️ Orphan Files (on disk but not in DB) — ${data.orphan_files.length}${data.orphan_size_human ? ' (' + escHtml(data.orphan_size_human) + ')' : ''}</h3>
+        <p style="margin:8px 0">
+          <button class="btn btn-sm" id="deleteOrphansBtn" style="background:var(--error);color:#fff" onclick="deleteOrphanFiles()">🗑 Delete orphan files</button>
+          <span id="deleteOrphansStatus" style="margin-left:8px;color:var(--text2)"></span>
+        </p>
         <div class="log-container" style="max-height:300px">
           ${data.orphan_files.map(f => `<div class="log-entry">${escHtml(f)}</div>`).join('')}
         </div>
@@ -642,6 +647,48 @@ async function loadUploads() {
   } catch(e) {
     document.getElementById('uploads-stats').innerHTML = `<div class="empty">Error: ${escHtml(e.message)}</div>`;
   }
+}
+
+// Orphan files currently listed in the Uploads panel.
+let orphanFiles = [];
+
+// Deletes the orphan files shown in the list. The server re-checks every
+// name and skips files that are referenced by a photo or were modified in
+// the last hour (they may belong to an upload still in progress).
+async function deleteOrphanFiles() {
+  const files = orphanFiles.slice();
+  if (!files.length) return;
+  if (!confirm(`Permanently delete ${files.length} orphan file(s) from disk?\n\nThese files are not referenced by any photo. This cannot be undone.`)) return;
+
+  const btn = document.getElementById('deleteOrphansBtn');
+  const status = document.getElementById('deleteOrphansStatus');
+  btn.disabled = true;
+
+  const total = { deleted: 0, freed_bytes: 0, skipped_recent: 0, skipped_referenced: 0, skipped_other: 0, failed: 0 };
+  try {
+    // Send in batches to stay under the request size limit.
+    const BATCH = 2000;
+    for (let i = 0; i < files.length; i += BATCH) {
+      status.textContent = `Deleting… ${Math.min(i + BATCH, files.length)} / ${files.length}`;
+      const res = await fetch(API + '/orphan-files/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ files: files.slice(i, i + BATCH) })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+      for (const k in total) total[k] += data[k] || 0;
+    }
+    let msg = `Deleted ${total.deleted} file(s), freed ${(total.freed_bytes / (1024 * 1024)).toFixed(1)} MB.`;
+    if (total.skipped_recent) msg += `\n${total.skipped_recent} skipped: modified in the last hour (possibly an upload in progress).`;
+    if (total.skipped_referenced) msg += `\n${total.skipped_referenced} skipped: now referenced by a photo.`;
+    if (total.skipped_other) msg += `\n${total.skipped_other} skipped: no longer on disk or not a regular file.`;
+    if (total.failed) msg += `\n${total.failed} could not be deleted (see server log).`;
+    alert(msg);
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
+  loadUploads();
 }
 
 // Issues

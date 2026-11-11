@@ -95,6 +95,13 @@ type Trip struct {
 	UserID            *string   `json:"user_id"`
 }
 
+type User struct {
+	UserID    string `json:"user_id"`
+	Email     string `json:"email"`
+	FirstSeen string `json:"first_seen"`
+	LastLogin string `json:"last_login"`
+}
+
 type Visitor struct {
 	ID        string    `json:"id"`
 	ViewCount int64     `json:"view_count"`

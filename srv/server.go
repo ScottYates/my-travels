@@ -579,6 +579,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/admin/logs", s.handleAdminLogs)
 	mux.HandleFunc("GET /api/admin/users", s.handleAdminUsers)
 	mux.HandleFunc("GET /api/admin/uploads", s.handleAdminUploads)
+	mux.HandleFunc("POST /api/admin/orphan-files/delete", s.handleAdminDeleteOrphanFiles)
 	mux.HandleFunc("GET /api/admin/upload-issues", s.handleAdminUploadIssues)
 	mux.HandleFunc("GET /api/admin/sessions", s.handleAdminSessions)
 	mux.HandleFunc("GET /api/admin/db-stats", s.handleAdminDBStats)
@@ -927,6 +928,17 @@ func (s *Server) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		slog.Error("create session", "error", err)
 		http.Error(w, "failed to create session", http.StatusInternalServerError)
 		return
+	}
+
+	// Keep a permanent record of the user. Session rows are deleted when
+	// they expire, and the admin user list must not depend on them.
+	if err := q.UpsertUser(r.Context(), dbgen.UpsertUserParams{
+		UserID:    claims.Sub,
+		Email:     claims.Email,
+		FirstSeen: now.UTC().Format(time.RFC3339),
+		LastLogin: now.UTC().Format(time.RFC3339),
+	}); err != nil {
+		slog.Error("record user", "error", err)
 	}
 
 	http.SetCookie(w, &http.Cookie{
